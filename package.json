@@ -1,0 +1,46 @@
+{
+  "name": "dsh-agent-preset-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent 预设编辑器：在侧边栏可视化地创建、配置、查看 Agent 预设，为预设定义带默认值的参数、MCP 与 Skills。",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/*.json",
+    "src/**/*.js",
+    "scripts/*.mjs",
+    "docs/*.md",
+    "README.md",
+    "AI-USAGE.md"
+  ],
+  "meta": {
+    "title": "Agent 预设编辑器",
+    "description": "在侧边栏管理 Agent 预设：参数化提示词、低代码表单、按预设挂载 MCP 与 Skills。"
+  },
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "check": "node scripts/check-parts.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}

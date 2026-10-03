@@ -1,0 +1,18 @@
+# dsh-agent-preset-editor bundle patch
+#
+# Installed through the official CLI:
+#
+#   dsh plugin --profile <name> add <absolute-package-dir>
+#
+# or by the plugin manager's `install_bundle` action. The command reconciles
+# `dsh.profile.bundles` against installed packages and, seeing this
+# declaration, appends `dsh-agent-preset-editor` to the bundle stack; the
+# profile boot then merges THIS patch (one insert of the host row).
+#
+# The host half owns the storage root and the `/agent-preset-editor/api/*`
+# routes; the browser half (`client.js`) registers the right-Sidebar tab type,
+# its guide entry, and the sidebar footer button.
+- insert:
+    - id: agent-preset-editor
+      name: 'dsh-agent-preset-editor'
+      config: {}
