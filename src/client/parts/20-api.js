@@ -59,9 +59,14 @@ async function loadEditorState(ctx, sessionId) {
     }
     dsh.defaultId = fallback;
   }
-  if (sessionId !== undefined && sessionId !== null && ctx && ctx.sessions && ctx.sessions.list) {
+  // `sessions` is deliberately NOT in the plugin's `inject`: a composition
+  // without the session controller must still render the editor, and reading
+  // a non-injected service through the proxy throws rather than returning
+  // undefined. `ctx.get` is the unguarded read.
+  var sessions = safeGet(ctx, 'sessions');
+  if (sessionId !== undefined && sessionId !== null && sessions && sessions.list) {
     try {
-      var snapshot = ctx.sessions.list.getSnapshot();
+      var snapshot = sessions.list.getSnapshot();
       var entry = snapshot && snapshot.byId ? snapshot.byId[sessionId] : undefined;
       if (entry) {
         dsh.sessionPreset = entry.agentPreset === undefined ? null : entry.agentPreset;

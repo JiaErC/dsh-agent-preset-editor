@@ -88,3 +88,27 @@ function toPresetId(text) {
 function nowIso() {
   return new Date().toISOString();
 }
+
+/**
+ * Read an OPTIONAL service without tripping Cordis's injection guard.
+ *
+ * A Cordis `Context` is a Proxy: reading a service the plugin did not declare
+ * in `inject` throws `cannot get property "x" without inject` — it does not
+ * return undefined. Declaring it in `inject` instead would gate the whole
+ * plugin on a service that may be absent in some compositions, which is a
+ * worse trade for something merely nice to have. `ctx.get(name)` is the
+ * supported unguarded read.
+ *
+ * @param {object} ctx - the browser Cordis context.
+ * @param {string} name - the service name.
+ * @returns {*} the service, or undefined when it is absent or unreadable.
+ */
+function safeGet(ctx, name) {
+  if (!ctx || typeof ctx.get !== 'function') return undefined;
+  try {
+    return ctx.get(name);
+  } catch (error) {
+    console.error('[agent-preset-editor] ctx.get("' + name + '") failed', error);
+    return undefined;
+  }
+}

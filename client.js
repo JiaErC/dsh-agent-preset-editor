@@ -101,6 +101,30 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/**
+ * Read an OPTIONAL service without tripping Cordis's injection guard.
+ *
+ * A Cordis `Context` is a Proxy: reading a service the plugin did not declare
+ * in `inject` throws `cannot get property "x" without inject` — it does not
+ * return undefined. Declaring it in `inject` instead would gate the whole
+ * plugin on a service that may be absent in some compositions, which is a
+ * worse trade for something merely nice to have. `ctx.get(name)` is the
+ * supported unguarded read.
+ *
+ * @param {object} ctx - the browser Cordis context.
+ * @param {string} name - the service name.
+ * @returns {*} the service, or undefined when it is absent or unreadable.
+ */
+function safeGet(ctx, name) {
+  if (!ctx || typeof ctx.get !== 'function') return undefined;
+  try {
+    return ctx.get(name);
+  } catch (error) {
+    console.error('[agent-preset-editor] ctx.get("' + name + '") failed', error);
+    return undefined;
+  }
+}
+
 /* ============================ 10-ui.js ============================ */
 /* ------------------------------------------------------------------ *
  * UI 原语（契约 §5）。
@@ -1245,9 +1269,14 @@ async function loadEditorState(ctx, sessionId) {
     }
     dsh.defaultId = fallback;
   }
-  if (sessionId !== undefined && sessionId !== null && ctx && ctx.sessions && ctx.sessions.list) {
+  // `sessions` is deliberately NOT in the plugin's `inject`: a composition
+  // without the session controller must still render the editor, and reading
+  // a non-injected service through the proxy throws rather than returning
+  // undefined. `ctx.get` is the unguarded read.
+  var sessions = safeGet(ctx, 'sessions');
+  if (sessionId !== undefined && sessionId !== null && sessions && sessions.list) {
     try {
-      var snapshot = ctx.sessions.list.getSnapshot();
+      var snapshot = sessions.list.getSnapshot();
       var entry = snapshot && snapshot.byId ? snapshot.byId[sessionId] : undefined;
       if (entry) {
         dsh.sessionPreset = entry.agentPreset === undefined ? null : entry.agentPreset;
@@ -5359,7 +5388,7 @@ function rosterRowOf(state, presetId) {
  * Load the editor state and keep a `reload` the views can await after a write.
  * @param {object} ctx - the browser Cordis context.
  * @param {string|undefined} sessionId - the session the tab belongs to.
- * @returns {{state: object|null, loading: boolean, error: string|null, reload: Function}}
+ * @returns {{state: object|null, loading: boolean, error: string|null, errorCode: string|null, reload: Function}}
  */
 function useEditorState(ctx, sessionId) {
   var pair = useState(null);
@@ -5371,6 +5400,11 @@ function useEditorState(ctx, sessionId) {
   var errPair = useState(null);
   var error = errPair[0];
   var setError = errPair[1];
+  // The code travels with the message so the failure view can tell a dead
+  // host route from an in-page bug without parsing prose.
+  var codePair = useState(null);
+  var errorCode = codePair[0];
+  var setErrorCode = codePair[1];
   // A reload counter instead of a bare callback keeps `reload` identity stable
   // for the views while still re-running the effect.
   var bumpPair = useState(0);
@@ -5390,10 +5424,12 @@ function useEditorState(ctx, sessionId) {
       if (cancelled || !alive.current) return;
       setState(next);
       setError(null);
+      setErrorCode(null);
       setLoading(false);
     }, function (cause) {
       if (cancelled || !alive.current) return;
       setError(cause && cause.message ? cause.message : String(cause));
+      setErrorCode(cause && cause.code ? String(cause.code) : null);
       setLoading(false);
     });
     return function () { cancelled = true; };
@@ -5403,17 +5439,22 @@ function useEditorState(ctx, sessionId) {
     setBump(function (n) { return n + 1; });
   }, []);
 
-  return { state: state, loading: loading, error: error, reload: reload };
+  return { state: state, loading: loading, error: error, errorCode: errorCode, reload: reload };
 }
 
 /** Open (or mint) an editor tab in the right Sidebar. */
 function openEditorTab(ctx, params) {
-  if (!ctx || !ctx.sidebarRight || typeof ctx.sidebarRight.openTab !== 'function') {
+  // `sidebarRight` is not in the plugin's `inject` for the same reason the tab
+  // registry is not: gating activation on it would disable the whole plugin
+  // where the right column is absent. Read it unguarded instead, so a missing
+  // service degrades to "nothing happens and the console says why".
+  var sidebarRight = safeGet(ctx, 'sidebarRight');
+  if (!sidebarRight || typeof sidebarRight.openTab !== 'function') {
     console.error('[agent-preset-editor] sidebarRight.openTab is unavailable');
     return;
   }
   try {
-    ctx.sidebarRight.openTab(TAB_KIND, { params: params || {} });
+    sidebarRight.openTab(TAB_KIND, { params: params || {} });
   } catch (error) {
     console.error('[agent-preset-editor] openTab failed', error);
   }
@@ -5573,9 +5614,20 @@ function EditorTabBody(props) {
   if (store.loading && store.state === null) {
     body = h(UiSpinner, null);
   } else if (store.error && store.state === null) {
+    // Only a transport-level failure implicates the host half. Pointing at the
+    // host for an in-page error sends the reader down the wrong path (it did,
+    // once: a client-side service read reported "host half not loaded"), so
+    // the hint is chosen from the error's own code.
+    var isTransport = store.errorCode === 'network'
+      || store.errorCode === 'http-404'
+      || store.errorCode === 'http-500'
+      || store.errorCode === 'http-502'
+      || store.errorCode === 'http-503';
     body = h(UiEmpty, {
       title: '无法读取插件数据',
-      hint: store.error + '（检查 dsh 宿主是否加载了 dsh-agent-preset-editor 的 host 半）',
+      hint: store.error + (isTransport
+        ? '（这是插件后端不可达：确认 dsh 宿主加载了 dsh-agent-preset-editor 的 host 半，且页面已刷新）'
+        : '（这是页面内错误，请看浏览器控制台里 [agent-preset-editor] 开头的记录）'),
     });
   } else if (mode === MODE_EDIT) {
     body = h(EditMode, Object.assign({}, shared, { presetId: presetId, mode: mode }));
