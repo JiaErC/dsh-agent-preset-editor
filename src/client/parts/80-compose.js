@@ -65,6 +65,17 @@ const COMPOSE_TEXT = {
     en: 'Add the following Skill to the Agent preset plugin:\n'
       + '<fill in the details here — its name, what it is for, and the SKILL.md body or the directory it lives in>',
   },
+  // The preset request needs one extra word of care: "Agent preset plugin" and
+  // "Agent preset" sit next to each other in the sentence, so the plugin is
+  // named with its own display title and set off by quotes. Everything after
+  // the colon is the user's to fill in — the agent cannot invent a purpose.
+  preset: {
+    zh: '给「Agent 预设编辑器」新增一个 Agent 预设：\n'
+      + '<说明它的用途：面向什么任务、AI 该扮演什么角色、需要哪些参数 / MCP / Skills>',
+    en: 'Add a new Agent preset to the Agent Preset Editor:\n'
+      + '<describe its purpose — the task it targets, the role the agent should play, '
+      + 'and the parameters, MCP servers or Skills it needs>',
+  },
 };
 
 /**

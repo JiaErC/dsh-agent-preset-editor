@@ -2487,6 +2487,13 @@ function LstAddPresetModal(props) {
     {
       open: true,
       title: '添加 Agent 预设',
+      actions: h(LstAskAi, {
+        ctx: props.ctx,
+        sessionId: props.sessionId,
+        kind: 'preset',
+        toast: props.toast,
+        onClose: props.onClose,
+      }),
       onClose: busy ? function () {} : props.onClose,
       footer: [
         h(UiButton, { key: 'cancel', variant: 'ghost', onClick: props.onClose, disabled: busy }, '取消'),
@@ -2591,6 +2598,10 @@ function LstPresetPane(props) {
       ? h(LstAddPresetModal, {
           state: state,
           existingIds: existingIds,
+          // Same plumbing as the MCP / Skill dialogs: the「让 AI 帮我写」
+          // button inside needs the session to write into.
+          ctx: props.ctx,
+          sessionId: props.sessionId,
           toast: props.toast,
           reload: props.reload,
           onClose: function () { setAddOpen(false); },
@@ -2746,8 +2757,8 @@ function LstMcpEntryFromDraft(draft, original) {
  * 框，剩下的由用户补完、由 AI 通过插件的 HTTP API 落库（见 AI-USAGE.md）。
  */
 function LstAskAi(props) {
-  var kind = props.kind === 'skill' ? 'skill' : 'mcp';
-  var what = kind === 'skill' ? 'Skill' : 'MCP';
+  var kind = props.kind === 'skill' ? 'skill' : (props.kind === 'preset' ? 'preset' : 'mcp');
+  var what = kind === 'skill' ? 'Skill' : (kind === 'preset' ? 'Agent 预设' : 'MCP');
   return h(UiButton, {
     variant: 'ghost',
     size: 'sm',
@@ -5809,6 +5820,17 @@ const COMPOSE_TEXT = {
       + '<在这里补充它的信息：名称 / 用途 / SKILL.md 正文或所在目录>',
     en: 'Add the following Skill to the Agent preset plugin:\n'
       + '<fill in the details here — its name, what it is for, and the SKILL.md body or the directory it lives in>',
+  },
+  // The preset request needs one extra word of care: "Agent preset plugin" and
+  // "Agent preset" sit next to each other in the sentence, so the plugin is
+  // named with its own display title and set off by quotes. Everything after
+  // the colon is the user's to fill in — the agent cannot invent a purpose.
+  preset: {
+    zh: '给「Agent 预设编辑器」新增一个 Agent 预设：\n'
+      + '<说明它的用途：面向什么任务、AI 该扮演什么角色、需要哪些参数 / MCP / Skills>',
+    en: 'Add a new Agent preset to the Agent Preset Editor:\n'
+      + '<describe its purpose — the task it targets, the role the agent should play, '
+      + 'and the parameters, MCP servers or Skills it needs>',
   },
 };
 

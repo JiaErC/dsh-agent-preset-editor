@@ -591,6 +591,13 @@ function LstAddPresetModal(props) {
     {
       open: true,
       title: '添加 Agent 预设',
+      actions: h(LstAskAi, {
+        ctx: props.ctx,
+        sessionId: props.sessionId,
+        kind: 'preset',
+        toast: props.toast,
+        onClose: props.onClose,
+      }),
       onClose: busy ? function () {} : props.onClose,
       footer: [
         h(UiButton, { key: 'cancel', variant: 'ghost', onClick: props.onClose, disabled: busy }, '取消'),
@@ -695,6 +702,10 @@ function LstPresetPane(props) {
       ? h(LstAddPresetModal, {
           state: state,
           existingIds: existingIds,
+          // Same plumbing as the MCP / Skill dialogs: the「让 AI 帮我写」
+          // button inside needs the session to write into.
+          ctx: props.ctx,
+          sessionId: props.sessionId,
           toast: props.toast,
           reload: props.reload,
           onClose: function () { setAddOpen(false); },
@@ -850,8 +861,8 @@ function LstMcpEntryFromDraft(draft, original) {
  * 框，剩下的由用户补完、由 AI 通过插件的 HTTP API 落库（见 AI-USAGE.md）。
  */
 function LstAskAi(props) {
-  var kind = props.kind === 'skill' ? 'skill' : 'mcp';
-  var what = kind === 'skill' ? 'Skill' : 'MCP';
+  var kind = props.kind === 'skill' ? 'skill' : (props.kind === 'preset' ? 'preset' : 'mcp');
+  var what = kind === 'skill' ? 'Skill' : (kind === 'preset' ? 'Agent 预设' : 'MCP');
   return h(UiButton, {
     variant: 'ghost',
     size: 'sm',

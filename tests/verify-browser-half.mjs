@@ -88,7 +88,7 @@ if (!raw.includes(ANCHOR)) {
 }
 const src = raw.replace(
   ANCHOR,
-  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstMcpEditModal, LstSkillEditModal, renderPrompt };\n  ' + ANCHOR,
+  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt };\n  ' + ANCHOR,
 )
 
 console.log('# 0. the bundle materializes with only the platform table')
@@ -266,16 +266,22 @@ console.log('\n# 5. request wording')
 document.documentElement.lang = 'zh-CN'
 const zhMcp = APE.composeRequestText('mcp')
 const zhSkill = APE.composeRequestText('skill')
+const zhPreset = APE.composeRequestText('preset')
 check('zh MCP request names the plugin and the catalogue', zhMcp.includes('Agent 预设插件') && zhMcp.includes('MCP'), zhMcp.slice(0, 40))
 check('zh MCP request tells the user what to fill in', /项目位置/.test(zhMcp) && /命令/.test(zhMcp))
 check('zh Skill request tells the user what to fill in', /SKILL\.md/.test(zhSkill))
+check('zh preset request asks for a new Agent preset', /新增一个 Agent 预设/.test(zhPreset), zhPreset.slice(0, 40))
+check('zh preset request names the plugin so the two "预设" cannot blur', /「Agent 预设编辑器」/.test(zhPreset), zhPreset.slice(0, 40))
+check('zh preset request tells the user what to describe', /用途/.test(zhPreset) && /角色/.test(zhPreset))
 document.documentElement.lang = 'en-US'
 const enMcp = APE.composeRequestText('mcp')
 const enSkill = APE.composeRequestText('skill')
+const enPreset = APE.composeRequestText('preset')
 check('en MCP request is English', /Add the following MCP to the Agent preset plugin/.test(enMcp), enMcp.slice(0, 60))
 check('en MCP request lists the same fields', /start command/.test(enMcp) && /transport/.test(enMcp))
 check('en Skill request is English', /Add the following Skill to the Agent preset plugin/.test(enSkill), enSkill.slice(0, 60))
-check('the two catalogues differ', zhMcp !== zhSkill && enMcp !== enSkill)
+check('en preset request is English', /Add a new Agent preset to the Agent Preset Editor/.test(enPreset), enPreset.slice(0, 60))
+check('all three requests differ', new Set([zhMcp, zhSkill, zhPreset, enMcp, enSkill, enPreset]).size === 6)
 check('unknown kind falls back to MCP', APE.composeRequestText('nope').includes('MCP'))
 
 /* ------------------------------- splice ------------------------------- */
@@ -372,6 +378,7 @@ function askAiButtonsIn(element) {
 }
 
 const dialogProps = {
+  state: { presets: [] },
   entry: null,
   isNew: true,
   existingIds: [],
@@ -383,6 +390,7 @@ const dialogProps = {
 }
 
 for (const [label, component, kind] of [
+  ['预设', APE.LstAddPresetModal, 'preset'],
   ['MCP', APE.LstMcpEditModal, 'mcp'],
   ['Skill', APE.LstSkillEditModal, 'skill'],
 ]) {
@@ -415,7 +423,7 @@ console.log('\n# 11. every dialog call site forwards ctx + sessionId')
 // class — a missed prop on an `h(Dialog, {…})` literal.
 {
   const list = readFileSync(join(root, 'src/client/parts/40-list.js'), 'utf8')
-  for (const dialog of ['LstMcpEditModal', 'LstSkillEditModal']) {
+  for (const dialog of ['LstAddPresetModal', 'LstMcpEditModal', 'LstSkillEditModal']) {
     const calls = [...list.matchAll(new RegExp(`h\\(${dialog},\\s*\\{([\\s\\S]*?)\\n\\s*\\}\\)`, 'g'))].map((m) => m[1])
     check(`${dialog} is rendered somewhere`, calls.length >= 1, `found ${calls.length}`)
     check(`every ${dialog} call site passes ctx`, calls.every((block) => /\bctx:/.test(block)))
