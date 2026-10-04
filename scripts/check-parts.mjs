@@ -46,12 +46,10 @@ for (const name of targets) {
   if (/^\s*(import|export)\s/m.test(source)) {
     problems.push('contains import/export — parts are concatenated, not loaded as modules')
   }
-  // JSX is not transpiled anywhere in this pipeline.
-  if (/<[A-Za-z][\w.]*(\s[^>]*)?\/?>/.test(source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, ''))) {
-    // A conservative heuristic: string comparisons like `a < b` do not match
-    // the tag pattern, but a genuine JSX tag does.
-    problems.push('looks like it contains JSX — use h(...) instead')
-  }
+  // JSX needs no separate check: it is not valid JavaScript, so the
+  // `new Function` parse above already rejects it. A text heuristic here used
+  // to fire on placeholder text such as `<fill in the details here>` inside a
+  // string literal — a false positive that cost more than it caught.
   // The browser half may only require platform-seeded modules.
   const requires = [...source.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1])
   for (const request of requires) {

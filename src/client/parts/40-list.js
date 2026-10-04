@@ -841,6 +841,35 @@ function LstMcpEntryFromDraft(draft, original) {
   };
 }
 
+/**
+ * 弹窗头部右侧的「让 AI 帮我写」按钮。
+ *
+ * 这两个弹窗擅长「存」一个定义，不擅长「问出」一个定义：用户手上通常没有
+ * serverName / transport / command 这些字段，但能用一句话描述这个东西。所以
+ * 按钮把一句填好格式的请求塞进**当前会话**的输入框，关掉弹窗并把焦点交给输入
+ * 框，剩下的由用户补完、由 AI 通过插件的 HTTP API 落库（见 AI-USAGE.md）。
+ */
+function LstAskAi(props) {
+  var kind = props.kind === 'skill' ? 'skill' : 'mcp';
+  var what = kind === 'skill' ? 'Skill' : 'MCP';
+  return h(UiButton, {
+    variant: 'ghost',
+    size: 'sm',
+    icon: 'edit',
+    title: '把「给 Agent 预设插件添加以下 ' + what + '：」写进当前会话的输入框；你补完信息后由 AI 写入插件',
+    onClick: function () {
+      var result = composeAskAi(props.ctx, props.sessionId, kind);
+      if (result.ok) {
+        LstOk(props.toast, '已写入输入框：补完信息后发送，AI 会把它加进插件');
+        props.onClose();
+      } else {
+        // 原因逐项具体化：一句笼统的「当前会话不可用」曾把排查带偏一整轮。
+        LstInfo(props.toast, '没能写入输入框——' + result.message);
+      }
+    },
+  }, '让 AI 帮我写');
+}
+
 /** MCP 新增 / 编辑弹窗。 */
 function LstMcpEditModal(props) {
   var isNew = props.isNew === true;
@@ -899,6 +928,13 @@ function LstMcpEditModal(props) {
     {
       open: true,
       title: isNew ? '添加 MCP 服务器' : '编辑 MCP 服务器',
+      actions: h(LstAskAi, {
+        ctx: props.ctx,
+        sessionId: props.sessionId,
+        kind: 'mcp',
+        toast: props.toast,
+        onClose: props.onClose,
+      }),
       onClose: busy ? function () {} : props.onClose,
       footer: [
         h(UiButton, { key: 'cancel', variant: 'ghost', onClick: props.onClose, disabled: busy }, '取消'),
@@ -1053,6 +1089,11 @@ function McpListMode(props) {
           entry: editing.entry,
           isNew: editing.isNew,
           existingIds: existingIds,
+          // ctx + sessionId must ride along: the dialog's「让 AI 帮我写」
+          // button writes into this session's composer. Dropping them here
+          // made the button report「页面上下文缺失」.
+          ctx: props.ctx,
+          sessionId: props.sessionId,
           toast: props.toast,
           reload: props.reload,
           onClose: function () { setEditing(null); },
@@ -1176,6 +1217,13 @@ function LstSkillEditModal(props) {
     {
       open: true,
       title: isNew ? '添加 Skill' : '编辑 Skill',
+      actions: h(LstAskAi, {
+        ctx: props.ctx,
+        sessionId: props.sessionId,
+        kind: 'skill',
+        toast: props.toast,
+        onClose: props.onClose,
+      }),
       onClose: busy ? function () {} : props.onClose,
       footer: [
         h(UiButton, { key: 'cancel', variant: 'ghost', onClick: props.onClose, disabled: busy }, '取消'),
@@ -1318,6 +1366,9 @@ function SkillListMode(props) {
           entry: editing.entry,
           isNew: editing.isNew,
           existingIds: existingIds,
+          // See LstMcpEditModal above: the button inside needs the session.
+          ctx: props.ctx,
+          sessionId: props.sessionId,
           toast: props.toast,
           reload: props.reload,
           onClose: function () { setEditing(null); },

@@ -19,6 +19,7 @@
     "locale/*.json",
     "src/**/*.js",
     "scripts/*.mjs",
+    "tests/*.mjs",
     "docs/*.md",
     "README.md",
     "AI-USAGE.md"
@@ -29,7 +30,8 @@
   },
   "scripts": {
     "build": "node scripts/build-client.mjs",
-    "check": "node scripts/check-parts.mjs"
+    "check": "node scripts/check-parts.mjs",
+    "test": "node tests/verify-browser-half.mjs"
   },
   "dsh": {
     "bundle": {

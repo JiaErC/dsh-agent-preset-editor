@@ -59,11 +59,9 @@ async function loadEditorState(ctx, sessionId) {
     }
     dsh.defaultId = fallback;
   }
-  // `sessions` is deliberately NOT in the plugin's `inject`: a composition
-  // without the session controller must still render the editor, and reading
-  // a non-injected service through the proxy throws rather than returning
-  // undefined. `ctx.get` is the unguarded read.
-  var sessions = safeGet(ctx, 'sessions');
+  // `sessions` is a declared dependency (see 99-epilogue.js): the inject-free
+  // `ctx.get` read does not reach a reflect.provide service.
+  var sessions = ctx ? ctx.sessions : undefined;
   if (sessionId !== undefined && sessionId !== null && sessions && sessions.list) {
     try {
       var snapshot = sessions.list.getSnapshot();

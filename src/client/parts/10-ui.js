@@ -115,7 +115,8 @@ const APE_CSS = `
 .ape-modal-mask{position:absolute;inset:0;background:var(--dsw-alias-bg-mask-1)}
 .ape-modal-card{position:relative;z-index:1;display:flex;flex-direction:column;width:min(420px,100%);max-height:100%;border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-shadow-lv3);overflow:hidden;outline:0}
 .ape-modal-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:14px 12px 10px 16px}
-.ape-modal-title{margin:0;font-size:14px;line-height:22px;font-weight:500;color:var(--dsw-alias-label-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ape-modal-title{margin:0;font-size:14px;line-height:22px;font-weight:500;color:var(--dsw-alias-label-primary);min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ape-modal-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
 .ape-modal-close{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:0 0 auto}
 .ape-modal-close:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .ape-modal-body{display:flex;flex-direction:column;gap:10px;padding:0 16px;overflow:auto;min-height:0}
@@ -885,6 +886,10 @@ function UiModal(props) {
       },
       h('div', { className: 'ape-modal-head' },
         h('h2', { className: 'ape-modal-title' }, title),
+        // Right-aligned header slot, between the title and the close control.
+        p.actions === null || p.actions === undefined
+          ? null
+          : h('div', { className: 'ape-modal-actions' }, p.actions),
         typeof p.onClose === 'function'
           ? h('button', {
             type: 'button',

@@ -32,6 +32,17 @@ DSH（DeepSeek Harness）Web GUI 的侧边栏插件：可视化地创建、配�
 `MCP` 与 `Skills` 目录是**全局共享、只被引用才生效**的：往目录里加一项不会影响任何预设，
 只有某个预设的 `mcp` / `skills` 里引用了它，才会在该预设的声明行里挂载。
 
+### 「让 AI 帮我写」
+
+MCP / Skills 的添加弹窗**顶部右侧**各有一个「让 AI 帮我写」按钮。它把一句填好格式的请求
+（`给 Agent 预设插件添加以下 MCP：` / `…以下 Skill：`，跟随界面语言在中英文之间切换）
+写进**当前会话的输入框**，关掉弹窗并把焦点交给输入框。你补完信息（项目位置、启动命令、
+传输方式、用途……）后发送，会话里的 AI 就会通过插件的 HTTP API 把它登记进对应目录。
+
+为什么要有这条路径：登记一个 MCP 要填 `serverName` / `transport` / `command` / `args`，
+登记一个 Skill 要写 `SKILL.md` 正文或给出目录 —— 用户手上通常没有这些字段，但能用一句话
+描述这个东西。于是让用户描述、让 AI 填表。
+
 ## 安装
 
 ```powershell
@@ -85,7 +96,17 @@ GUI 与 agent 的写入都经过同一套校验。
 ```powershell
 npm run build   # node scripts/build-client.mjs  —— 把 src/client/parts/*.js 拼成 client.js
 npm run check   # node scripts/check-parts.mjs   —— part 片段语法自查
+npm test        # node tests/verify-browser-half.mjs —— 在 mock 宿主上跑真实 client.js
 ```
+
+`npm test` 用的是**构建产物本身**，不是复刻实现：它把 client.js 加载进一个 mock 宿主，
+让 `apply()` 真跑一遍注册，再驱动标签页正文与「让 AI 帮我写」的写入路径。
+
+两个 mock 细节是拿真机缺陷换来的，改测试时别简化掉：
+
+- **Cordis 的 `Context` 是 Proxy**：读一个没写进 `inject` 的服务会**抛错**而不是返回
+  `undefined`，所以 mock 也必须抛。用普通对象当 mock，这类错误在本地完全不可见。
+- **`useEffect` 要真的执行**：否则异步 loader 与 composer 写入路径根本没被跑到。
 
 ```
 package.json          dsh.bundle.patch + dsh.client(...) + exports/meta/icon
@@ -95,12 +116,18 @@ client.js             client 半入口（由 parts 拼接生成，勿手改）
 src/host/*.js         host 源码：存储、路由、声明渲染
 src/client/parts/*.js client 源码片段（按文件名升序拼接，无 import/export、无 JSX）
 scripts/build-client.mjs
+tests/verify-browser-half.mjs
 locale/{en,zh}.json   Plugin Manager 显示文案
 ```
 
 硬约束（改代码前务必读 CONTRACT §1.2 / §1.3）：client 半是**单文件 Lazy-CJS**，
 只能 `require('react')` / `require('react/jsx-runtime')`，不得引用任何其它 DSH Client 包；
 part 片段之间不写 `import` / `export`；样式只用主题 token，不替换 app root。
+
+服务读取另有一条硬规矩：**能用 `inject` 声明的就声明**（`ctx.sessions`、`ctx.slots`、`ctx.remote`），
+只有**晚出现**的服务（`sidebarRightTabs`）或**文档明确要求 `ctx.get` 探测**的服务
+（`conversation`）才走 `safeGet` / `ctx.inject`。曾经的教训：`sessions` 偷懒用 `ctx.get`，
+在真机上返回空，整个「让 AI 帮我写」静默失败。
 
 ## 相关文档
 
