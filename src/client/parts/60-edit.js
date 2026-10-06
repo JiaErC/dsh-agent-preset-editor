@@ -60,6 +60,10 @@ const ED_MUTED_STYLE = {
   color: 'var(--dsw-alias-label-secondary, inherit)',
   fontSize: 12,
   lineHeight: 1.5,
+  // Multi-line prose must wrap inside its own column instead of running under
+  // the controls beside it.
+  wordBreak: 'break-word',
+  overflowWrap: 'anywhere',
 };
 const ED_NOTICE_STYLE = {
   display: 'flex',
@@ -86,14 +90,16 @@ const ED_PRE_STYLE = {
 const ED_CODE_STYLE = {
   fontSize: 11,
   color: 'var(--dsw-alias-label-secondary, inherit)',
+  wordBreak: 'break-all',
 };
 const ED_STACK_STYLE = { display: 'flex', flexDirection: 'column', gap: 8 };
-const ED_CHIPROW_STYLE = { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' };
+const ED_CHIPROW_STYLE = { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', minWidth: 0 };
 const ED_ROW_STYLE = {
   display: 'flex',
-  gap: 8,
+  gap: 10,
   alignItems: 'flex-start',
-  padding: '6px 0',
+  padding: '10px 8px',
+  minWidth: 0,
   borderTop: '1px solid var(--dsw-alias-border-l3, rgba(127,127,127,0.18))',
 };
 const ED_TOP_STYLE = {
@@ -1135,7 +1141,7 @@ function EdCatalogPicker(props) {
             checked: checked,
             onChange: function (value) { props.onToggle(id, value); },
           }),
-          h('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+          h('div', { style: { flex: '1 1 auto', minWidth: 0, maxWidth: '100%', wordBreak: 'break-word', overflowWrap: 'anywhere' } },
             h('div', { style: ED_CHIPROW_STYLE },
               h('span', null, EdStr(entry.name || id)),
               h('code', { style: ED_CODE_STYLE }, id),

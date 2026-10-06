@@ -431,6 +431,53 @@ console.log('\n# 11. every dialog call site forwards ctx + sessionId')
   }
 }
 
+/* ------------------ list row layout (overlap regression) -------------- */
+
+console.log('\n# 12. list-row layout cannot overlap')
+// The reported MCP-list bug: the switch beside a multi-line description was a
+// flex-shrink candidate (flex:0 1 auto + min-width:0), so a long description
+// squeezed its box to 0 width while the 36px control inside could not shrink —
+// the control spilled out and painted over the text. Layout facts are asserted
+// here because a mock renderer has no geometry to measure.
+{
+  const css = (selector) => {
+    const found = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\{([^}]*)\\}`).exec(raw)
+    return found ? found[1] : undefined
+  }
+
+  const switchField = css('.ape-switch-field')
+  check('.ape-switch-field exists in the stylesheet', typeof switchField === 'string')
+  check('the switch field is not a flex-shrink candidate', /flex:0 0 auto/.test(switchField || ''), switchField)
+  check('the switch control itself is fixed size', /flex:0 0 auto/.test(css('.ape-switch') || ''))
+
+  const rowMain = css('.ape-listrow-main')
+  check('.ape-listrow-main exists', typeof rowMain === 'string')
+  check('the text column can shrink below its content', /min-width:0/.test(rowMain || ''), rowMain)
+  check('the text column wraps long words', /word-break:break-word/.test(rowMain || '') && /overflow-wrap:anywhere/.test(rowMain || ''), rowMain)
+
+  const rowRight = css('.ape-listrow-right')
+  check('the control column never shrinks', /flex:0 0 auto/.test(rowRight || ''), rowRight)
+  check('the control column does not wrap', /flex-wrap:nowrap/.test(rowRight || ''), rowRight)
+
+  const row = css('.ape-listrow')
+  check('the row has breathing room', /padding:10px 12px/.test(row || ''), row)
+  check('the row has no fixed height', !/(^|;)height:/.test(row || ''), row)
+
+  // The switch wrapper in McpListMode / SkillListMode must be pinned too: it is
+  // a flex item inside `actions` and would otherwise be the next shrink target.
+  const list = readFileSync(join(root, 'src/client/parts/40-list.js'), 'utf8')
+  const pinned = [...list.matchAll(/h\('div', \{ style: \{ flex: 'none'[^}]*\}, onClick: LstStop\(\) \}, h\(UiSwitch/g)]
+  check('both list modes pin the switch wrapper', pinned.length === 2, `found ${pinned.length}`)
+
+  // And the edit-mode picker: prose wraps, identifiers break mid-token.
+  const edit = readFileSync(join(root, 'src/client/parts/60-edit.js'), 'utf8')
+  check('edit-mode rows wrap prose', /wordBreak: 'break-word'[\s\S]{0,40}overflowWrap: 'anywhere'/.test(edit))
+  check('edit-mode code identifiers break mid-token', /wordBreak: 'break-all'/.test(edit))
+  check('edit-mode rows carry padding', /padding: '10px 8px'/.test(edit))
+  check('edit-mode rows shrink-safe', /padding: '10px 8px',\n\s*minWidth: 0,/.test(edit))
+  check('edit-mode rows have no fixed height', !/ED_ROW_STYLE[\s\S]{0,200}?height:/.test(edit))
+}
+
 console.log('')
 if (failures.length === 0) console.log('ALL CHECKS PASSED')
 else { console.log(`${failures.length} CHECK(S) FAILED: ${failures.join(', ')}`); process.exit(1) }

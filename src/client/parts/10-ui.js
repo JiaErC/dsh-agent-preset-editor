@@ -71,8 +71,13 @@ const APE_CSS = `
 .ape-select-multi{padding:0;min-height:76px;cursor:default}
 .ape-select-caret{position:absolute;right:7px;top:50%;transform:translateY(-50%);display:inline-flex;color:var(--dsw-alias-label-tertiary);pointer-events:none}
 
-/* ---------- 开关 ---------- */
-.ape-switch-field{display:inline-flex;align-items:center;gap:8px;min-width:0}
+/* ---------- 开关 ---------- *
+ * flex:0 0 auto 是功能性的，不是装饰：作为 flex item 它原本是 flex:0 1 auto
+ * 且带 min-width:0，于是一个长兄弟节点（多行描述）能把这个盒子压到 0 宽，
+ * 而里面的开关仍是 flex:0 0 auto / width:36px —— 36px 的控件就溢出自己的盒子、
+ * 画到文本上。开关是固定尺寸控件，永远不该是 flex-shrink 的候选。
+ * 注意：APE_CSS 是模板字符串，本常量内不能出现反引号。 */
+.ape-switch-field{display:inline-flex;align-items:center;gap:8px;flex:0 0 auto;min-width:0}
 .ape-switch{box-sizing:border-box;position:relative;flex:0 0 auto;width:36px;height:20px;padding:2px;border:0;border-radius:999px;background:var(--dsw-alias-border-l3);cursor:pointer}
 .ape-switch[aria-checked="true"]{background:var(--dsw-alias-brand-primary)}
 .ape-switch:disabled{cursor:not-allowed;opacity:.5}
@@ -135,13 +140,13 @@ const APE_CSS = `
 .ape-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
 .ape-section-title{font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ape-section-actions{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}
-.ape-listrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border:.5px solid transparent;border-radius:var(--dsw-radius-sm);min-width:0}
+.ape-listrow{display:flex;align-items:center;gap:10px;padding:10px 12px;border:.5px solid transparent;border-radius:var(--dsw-radius-sm);min-width:0}
 .ape-listrow-click{cursor:pointer}
 .ape-listrow-click:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .ape-listrow-active{background:var(--dsw-alias-button-ghost-active-fill);border-color:var(--dsw-alias-button-ghost-active-border)}
 .ape-listrow:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}
-.ape-listrow-main{display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-width:0}
-.ape-listrow-right{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto}
+.ape-listrow-main{display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-width:0;word-break:break-word;overflow-wrap:anywhere}
+.ape-listrow-right{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;flex-wrap:nowrap}
 
 /* ---------- 提示条 ---------- */
 .ape-toasts{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:1100;display:flex;flex-direction:column;align-items:center;gap:8px;max-width:min(560px,calc(100vw - 32px));pointer-events:none}

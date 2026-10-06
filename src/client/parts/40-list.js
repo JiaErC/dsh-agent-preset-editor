@@ -39,19 +39,28 @@ const LST_STARTER_PROMPT = '你是 {{ $role }}。\n\n请按用户的要求完成
 
 /** 行内布局常量：只使用主题 token 上色（CONTRACT §1.2），字面颜色仅 Icon 内部使用。 */
 const LST_STYLE = {
-  rowMain: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: '0', flex: '1 1 auto', cursor: 'pointer' },
-  rowTitle: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
+  rowMain: {
+    display: 'flex', flexDirection: 'column', gap: '2px', minWidth: '0', flex: '1 1 auto',
+    cursor: 'pointer', wordBreak: 'break-word', overflowWrap: 'anywhere',
+  },
+  rowTitle: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', minWidth: '0' },
   rowName: { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
-  rowSub: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', lineHeight: '1.5' },
+  rowSub: {
+    color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', lineHeight: '1.5',
+    wordBreak: 'break-word', overflowWrap: 'anywhere',
+  },
   rowId: {
     color: 'var(--dsw-alias-label-secondary)',
     fontSize: '11px',
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     opacity: '0.75',
+    // Identifier, not prose: there is no space to break at, so it must be
+    // allowed to break mid-token or a long id pushes the row wider.
+    wordBreak: 'break-all',
   },
   rowErr: { color: 'var(--dsw-alias-label-error)', fontSize: '12px' },
   rowHint: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px' },
-  actions: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: '0' },
+  actions: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: '0', flex: '0 0 auto', flexWrap: 'nowrap' },
   toolbarRow: { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', flexWrap: 'wrap' },
   grow: { flex: '1 1 auto', minWidth: '140px' },
   note: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', lineHeight: '1.7', padding: '0 2px' },
@@ -1039,7 +1048,7 @@ function McpListMode(props) {
         right: h(
           'div',
           { style: LST_STYLE.actions },
-          h('div', { onClick: LstStop() }, h(UiSwitch, {
+          h('div', { style: { flex: 'none', display: 'inline-flex' }, onClick: LstStop() }, h(UiSwitch, {
             checked: entry.enabled !== false,
             onChange: function (next) { toggle(entry, next); },
           })),
@@ -1316,7 +1325,7 @@ function SkillListMode(props) {
         right: h(
           'div',
           { style: LST_STYLE.actions },
-          h('div', { onClick: LstStop() }, h(UiSwitch, {
+          h('div', { style: { flex: 'none', display: 'inline-flex' }, onClick: LstStop() }, h(UiSwitch, {
             checked: entry.enabled !== false,
             onChange: function (next) { toggle(entry, next); },
           })),
