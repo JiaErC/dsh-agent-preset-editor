@@ -35,6 +35,27 @@ export const MCP_CLIENT_PLUGIN = '@deepseek-ai/dsh-mcp-client';
 /** Skill 提供方。 */
 export const SKILL_FS_PLUGIN = '@deepseek-ai/dsh-skill-filesystem';
 
+/**
+ * 一个预设里 Skill 行的固定 id（同一预设最多一行）。
+ *
+ * `@deepseek-ai/dsh-skill-filesystem` 的 `providerName` 默认就是 `"filesystem"`，
+ * 而 `@deepseek-ai/dsh-skill` 的 provider 表按名唯一、撞名即抛
+ * `a skill provider named "filesystem" is already registered in this scope`。
+ * 所以逐 Skill 一行必然让第二个行激活失败、整个预设子树起不来。一个 provider
+ * 本身就能扫多个根，因此所有 Skill 目录合并进这一行 —— 详见 buildPresetRow。
+ */
+const SKILL_FS_ROW_ID = 'skill-filesystem';
+
+/**
+ * Skill 目录去重用的比较键（只用于比较，不写进声明行）。
+ *
+ * 同一物理目录会有两种字面写法：inline 源的目录由 `path.join` 拼出（Windows 上是
+ * 反斜杠），path 源的目录是用户填的字符串（常见正斜杠）。拿原字符串比较会漏掉这种
+ * 「同目录不同写法」，provider 便把同一个根扫两遍。这里只做词法归一 —— 统一分隔符
+ * 方向、去掉结尾分隔符 —— 不解析符号链接、也不改大小写。
+ */
+const skillDirKey = (dir) => String(dir).replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+
 /** profile 里受管区块的边界标记。 */
 export const BLOCK_BEGIN = '# >>> dsh-agent-preset-editor BEGIN';
 export const BLOCK_END = '# <<< dsh-agent-preset-editor END';
@@ -330,12 +351,28 @@ export function buildPresetRow(definition, values, catalogs, options = {}) {
     plugins.push({ id: `mcp-${entry.id}`, name: MCP_CLIENT_PLUGIN, config: { ...entry.server } });
   }
 
+  // 该预设引用到的所有 Skill 目录合并成唯一一行 skill-filesystem。
+  //
+  // 这里不能「一个 Skill 一行」：SKILL_FS_PLUGIN 的 providerName 默认是
+  // "filesystem"，而 @deepseek-ai/dsh-skill 的 provider 表按名唯一，第二行会抛
+  //   a skill provider named "filesystem" is already registered in this scope
+  // 于是整棵预设子树激活不到 active、preset-<id> 变成坏行（现象就是「勾了两个
+  // Skill 之后这个预设选不了」）。一个 provider 能扫多个根，所以合并成一行、
+  // 把目录全放进 customSkillDirs：去重、跳过空目录、一个都没有时不生成该行。
+  const skillDirs = [];
+  const seenSkillDirs = new Set();
   for (const ref of definition.skills || []) {
     const entry = skillById.get(ref);
     if (!entry || entry.enabled === false) continue;
     const dir = typeof entry.dir === 'string' && entry.dir !== '' ? entry.dir : skillDirOf(entry, options.store);
     if (dir === '') continue;
-    plugins.push({ id: `skill-${entry.id}`, name: SKILL_FS_PLUGIN, config: { customSkillDirs: [dir] } });
+    const key = skillDirKey(dir);
+    if (seenSkillDirs.has(key)) continue;
+    seenSkillDirs.add(key);
+    skillDirs.push(dir);
+  }
+  if (skillDirs.length > 0) {
+    plugins.push({ id: SKILL_FS_ROW_ID, name: SKILL_FS_PLUGIN, config: { customSkillDirs: skillDirs } });
   }
 
   return {

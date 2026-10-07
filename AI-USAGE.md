@@ -602,11 +602,11 @@ Invoke-Ape -Path '/preset/delete' -Method POST -Json '{"id":"spec-writer"}' | Ou
 |---|---|---|
 | 1 | dsh web 的监听端口 | 本机 web profile 是 `127.0.0.1:3080`；首页 URL 带 `?token=<43 字符>`，**不带 token 拿不到 200**。换机器请以用户浏览器地址为准 |
 | 2 | `/preset/apply` 的 `mode` | 固定 `"patch"`、`restartRequired: true`。响应另有 `rowIds` / `declarations` / `profilePatch` / `profileBackup` / `profileChanged` 五个字段 |
-| 3 | 发布渲染出的 `plugins[]` | 见下方实测样例：persona 行 `id: persona`、`config.prefix` 是块标量 `\|-`；MCP 行 `id: mcp-<目录项 id>`；Skill 行 `id: skill-<目录项 id>`、`config.customSkillDirs` 指向落盘目录 |
+| 3 | 发布渲染出的 `plugins[]` | 见下方实测样例：persona 行 `id: persona`、`config.prefix` 是块标量 `\|-`；MCP 行 `id: mcp-<目录项 id>`、一个 MCP 一行；**Skill 行一个预设最多一条**、`id` 固定为 `skill-filesystem`，被引用到的目录全部合并进 `config.customSkillDirs` 数组（原因见下方「Skill 行为什么只能有一行」） |
 | 4 | 存储根布局 | `applied.json`、`mcp.json`、`skills.json`、`presets.patch.yml`、`presets/<id>.json`、`values/<id>.json`、`skills/<id>/SKILL.md`（inline 来源的 Skill 会落盘到这里）。**写代码请走 HTTP API，别依赖这个布局** |
 | 5 | 同 id 二次 `/preset/save` | **覆盖，不报 conflict**（返回 `{"ok":true,"data":{"id":"…"}}`）。id 是主键，改名 = 新建新 id + 删除旧 id |
 | 6 | 发布备份文件名 | `cordis.patch.yml.bak-agent-preset-editor`（与 profile patch 同目录） |
-| 7 | inline Skill 落盘 | `<root>/skills/<id>/SKILL.md`；声明行用 `@deepseek-ai/dsh-skill-filesystem` 的 `customSkillDirs: [ '<root>/skills/<id>' ]` 指过去 |
+| 7 | inline Skill 落盘 | `<root>/skills/<id>/SKILL.md`；声明行用 `@deepseek-ai/dsh-skill-filesystem` 的 `customSkillDirs: [ '<root>/skills/<id>' ]` 指过去。引用多个 Skill 时是这个数组的**多个元素**，不是多行 —— 见下方「Skill 行为什么只能有一行」 |
 | 8 | `sessionPresetLocked=true` 时 GUI「启用」按钮 | **不禁用**。该字段只是 `turnCount > 0` 的启发式提示；权威裁决是 `select` 抛的 `agent-preset/locked`。按钮始终可点，失败时提示「任务已开始，无法切换预设；请新建会话后再选「X」」 |
 | 9 | 换 id 后旧 `preset-<旧id>` 行 | **不会自动清理**。受管区块只渲染 `applied.json` 里记录的 id；要下线一个已发布预设，调 `/preset/delete` |
 
@@ -641,12 +641,35 @@ Invoke-Ape -Path '/preset/delete' -Method POST -Json '{"id":"spec-writer"}' | Ou
               env: {}
               url: ''
               toolCallTimeoutMs: 120000
-          - id: skill-ape-skill
+          - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
             config:
               customSkillDirs:
                 - 'D:\.dsh\agent-preset-editor\skills\ape-skill'
+                - 'D:/All_mcp_skills_tools/anthropics-skills/docx'
+                - 'D:/All_mcp_skills_tools/PPT-Design-Skill/skill'
 ```
+
+### Skill 行为什么只能有一行（血泪教训）
+
+**不变式：同一个预设里，`@deepseek-ai/dsh-skill-filesystem` 最多一行；引用 N 个 Skill 就往
+`customSkillDirs` 里放 N 个目录**（按 `skills[]` 的引用顺序；同一目录只留一份 —— 去重前先做
+词法归一，统一分隔符方向与结尾分隔符，因为 inline 源拼出的目录是反斜杠、path 源常是正斜杠，
+同一物理目录会因此有两种写法；空目录跳过；一个有效目录都没有就不生成该行）。
+
+早期版本给每个 Skill 各推一行，结果是：**任何引用 ≥2 个 Skill 的预设都激活不了**，而且症状
+极具误导性 —— 没有报错、没有日志，只是那个 `preset-<id>` 变成 roster 里的坏行、选不了也用不了。
+
+失败链条：
+
+1. `@deepseek-ai/dsh-skill-filesystem` 的 `providerName` 默认就是 `"filesystem"`（它的
+   config schema 里 `default("filesystem")`，构造时 `this.name = config.providerName ?? "filesystem"`）。
+2. `@deepseek-ai/dsh-skill` 的 provider 表**按名唯一**，第二个同名 provider 直接抛
+   `a skill provider named "filesystem" is already registered in this scope`。
+3. 抛错发生在**激活**阶段，于是整棵预设子树起不来。
+
+一个 provider 本身就能扫多个根，所以正确做法是合并成一行。注意它**只在进程内可见**：
+dsh 不会把这个失败写进 stderr，只能从 roster 的 `broken` 字段读到 —— 排查这类问题时别只看日志。
 
 ### 两条容易误解的语义（都是实测出来的）
 

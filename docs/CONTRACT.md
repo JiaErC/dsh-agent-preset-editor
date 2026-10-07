@@ -204,6 +204,18 @@ ctx.remote.settings.update(ns, { selectedDefault: id })
 }
 ```
 
+**不变式（发布渲染，务必遵守）**：同一个预设引用 N 个 Skill 时，声明行里
+`@deepseek-ai/dsh-skill-filesystem` **最多只出现一行**，`config.customSkillDirs`
+按 `definition.skills[]` 的引用顺序装 N 个目录（去重 —— 比较前先做词法归一：统一分隔符方向、
+去掉结尾分隔符，因为 inline 源走 `path.join` 得到反斜杠、path 源多为正斜杠，同一物理目录会有
+两种写法；跳过空目录；一个有效目录都没有就不生成该行）。
+
+原因是硬约束而非风格：该插件的 `providerName` 默认就是 `"filesystem"`，而
+`@deepseek-ai/dsh-skill` 的 provider 表**按名唯一** —— 逐 Skill 一行会让第二个 provider
+撞名并抛 `a skill provider named "filesystem" is already registered in this scope`，
+且抛在**激活**阶段：整棵预设子树起不来、`preset-<id>` 变成坏行。一个 provider 能扫多个根，
+合并成一行即可覆盖全部 Skill。该失败**不写 stderr**，只能从 roster 的 `broken` 字段读到。
+
 ### 2.4 ParamSpec（参数定义）
 ```jsonc
 {

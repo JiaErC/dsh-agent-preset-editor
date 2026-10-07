@@ -31,6 +31,9 @@ DSH（DeepSeek Harness）Web GUI 的侧边栏插件：可视化地创建、配�
 
 `MCP` 与 `Skills` 目录是**全局共享、只被引用才生效**的：往目录里加一项不会影响任何预设，
 只有某个预设的 `mcp` / `skills` 里引用了它，才会在该预设的声明行里挂载。
+MCP 是一个引用一行；**Skill 无论引用几个都只合成一行**（一个 provider 扫多个目录）——
+这是宿主侧 provider 按名唯一的硬约束，违反会让整个预设激活失败，
+详见 [AI-USAGE.md](AI-USAGE.md) 的「Skill 行为什么只能有一行」。
 
 ### 「让 AI 帮我写」
 
