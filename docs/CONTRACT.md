@@ -159,6 +159,7 @@ ctx.remote.settings.update(ns, { selectedDefault: id })
   "prompt": "你是 {{ $role }}。\n任务类型：{{ $taskType }}\n",  // 提示词模板，参数占位见 §2.5
   "params": [ /* ParamSpec[]，见 §2.4 */ ],
   "form": { "rule": [ /* 低代码 rule，见 §4 */ ] },  // 参数配置模式的 GUI
+  "plugins": [ /* Cordis 行，见 §2.7；可省略 */ ],
   "mcp": ["docx", "excel"],           // 引用 MCP 目录项 id（不影响其它预设）
   "skills": ["design-doc-authoring"], // 引用 Skill 目录项 id
   "dsh": {                            // 由 host 派生回填（可选，保存时可忽略）
@@ -215,6 +216,50 @@ ctx.remote.settings.update(ns, { selectedDefault: id })
 撞名并抛 `a skill provider named "filesystem" is already registered in this scope`，
 且抛在**激活**阶段：整棵预设子树起不来、`preset-<id>` 变成坏行。一个 provider 能扫多个根，
 合并成一行即可覆盖全部 Skill。该失败**不写 stderr**，只能从 roster 的 `broken` 字段读到。
+
+### 2.7 plugins（预设自带的 Cordis 行，可选）
+
+**为什么必须有这个字段**：Web profile 的 `@deepseek-ai/dsh-web-app/cordis.patch.yml`
+（第 430-556 行）把整个 agent 平面在 **host 平面整体 `disabled: true`** —— `tool-fs`、
+`tool-fs-search`、`tool-pwsh`、`tool-bash`、`tool-jobs`、`skill-filesystem`、`tool-skill`、
+`command-goal`、`tool-goal`、`plan-mode`、`compaction-*`、`tool-subagent*`、`workflow-ptc`、
+`tool-workflow`、`agent-instructions`、`tool-todo`、`tool-web` —— 改由**每个预设自己挂载**。
+只渲染 persona 的预设，其 agent 一个工具都没有：读不了文件、跑不了命令、上不了网、
+`skills[]` 也加载不到（provider 与模型可见工具是两行，缺一不可）。
+
+```jsonc
+{
+  "plugins": [
+    { "id": "tool-fs", "name": "@deepseek-ai/dsh-tool-fs" },
+    { "id": "tool-web", "name": "@deepseek-ai/dsh-tool-web", "config": { "fetch": true } },
+    // cordis:group 的 config 是**嵌套条目数组**，不是对象
+    { "id": "planning", "name": "cordis:group", "group": true,
+      "isolate": { "planMode": true },
+      "config": [ { "id": "plan-mode", "name": "@deepseek-ai/dsh-plan-mode" } ] }
+  ]
+}
+```
+
+- 行的键与 `cordis-plugin-loader` 的 row 形态一致：`id` / `name` / `config` / `group` /
+  `disabled` / `inject` / `intercept` / `isolate`。`id` 在同一预设内必须唯一。
+- 渲染位置：`buildPresetRow()` 把它们插在 **persona 之后、MCP 与 Skill 行之前**。
+  persona 由渲染器负责，**不要在 plugins 里再写一行 persona**；`skill-filesystem` 也由
+  `definition.skills[]` 自动生成（见 §2.3 的不变式），重复写会撞名。
+- **表达式**：推荐写成 `{ "__jsExpr": "表达式" }` 标记，发射成 `!!js "表达式"`（profile 的
+  条目列表方言注册了这个标量 tag，见 `dsh-app-boot` 的 `JsExpr`；Loader 在条目激活时求值）。
+  `disabled` 也接受布尔（`true` 停用 / `false` 启用）。
+- **字符串会被归一化器自动升格**成 `{ "__jsExpr": 字符串 }`，不允许以普通字符串形态落到
+  声明文件里。原因是硬约束而非风格：`disabledOf()` 对**非标记值**走
+  `Boolean(options.disabled)`，任何非空字符串恒为真 —— 一串看着像表达式的
+  `"process.platform === 'win32'"` 若原样发射，会在**所有平台**把该行静默停用，
+  不报错、不写日志。升格之后，用户写成字符串也能得到他想要的效果：
+  `"process.platform === 'win32'"` 与 `{ "__jsExpr": "process.platform === 'win32'" }` 等价。
+- 省略 `plugins` 键 = 「本次没有提供插件清单」，store 会**沿用上一次落盘的值**；
+  显式传 `[]` 才是清空。这样旧版编辑界面保存一次不会把已有插件默默清掉。
+- 目录位置：`$DSH_HOME/agent-preset-editor/presets/<id>.json` 的 `plugins` 字段。
+- 离线自检：`node scripts/validate-preset-draft.mjs <预设.json>`（校验形状、占位闭合、
+  必备能力覆盖、`!!js` 发射形态）；`node tests/preset-plugins.test.mjs` 是回归测试
+  （13 项，含「字符串 disabled 必须升格成 `!!js` 标量」这条）。
 
 ### 2.4 ParamSpec（参数定义）
 ```jsonc

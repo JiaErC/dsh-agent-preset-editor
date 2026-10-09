@@ -183,6 +183,112 @@ function normalizeForm(value) {
   return { rule };
 }
 
+/**
+ * `!!js` 表达式标记：`{ __jsExpr: "表达式" }`。
+ *
+ * profile 的条目列表方言把 `!!js` 解析成这个形状（构造器见 dsh-app-boot 的
+ * JsExpr），Loader 的 isJsExpr 也认它。声明文件发射器会把它还原成 `!!js "…"`。
+ * 只有单个 `__jsExpr` 字符串键才算标记，别的形状一律当普通对象处理。
+ */
+export function isJsExprMarker(value) {
+  if (!isPlainObject(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 1 && keys[0] === '__jsExpr' && typeof value.__jsExpr === 'string';
+}
+
+/** Cordis 行配置里允许出现的键（Loader 的 row 形态，见 cordis-composition-reference）。 */
+const PLUGIN_ROW_KEYS = ['id', 'name', 'config', 'disabled', 'inject', 'intercept', 'isolate', 'group'];
+/** 一行最多允许的额外字段数，够用即可，防止把声明文件撑成垃圾场。 */
+const MAX_PLUGIN_ROWS = 128;
+
+/**
+ * 预设自带的 Cordis 插件行（§2.1 plugins，可选）。
+ *
+ * 为什么需要它：Web profile 的 @deepseek-ai/dsh-web-app/cordis.patch.yml 把整个
+ * agent 平面（tool-fs / tool-pwsh / tool-web / skill-filesystem / tool-skill /
+ * tool-todo / tool-goal / plan-mode / compaction-* / agent-instructions …）在 host
+ * 平面整体 disabled，改由**每个预设自己挂载**；declarations.js 的 buildPresetRow()
+ * 只渲染 persona + mcp-* + skill-filesystem，所以没有这一段的预设装不进任何工具。
+ *
+ * 这里只做形状校验，不解释语义：一行必须是 { id, name, config?, … }，id 与 name
+ * 必填且 id 唯一（Loader 的 row id 在同一个 entry 列表里必须唯一）。`config` 通常
+ * 是 JSON 对象，但 `group: true` 的行例外（config 是嵌套条目数组）。`disabled`
+ * 允许布尔或字符串（字符串是 loader 的 `!!js` 表达式形态，见
+ * cordis-composition-reference：普通 patch 行按字面量处理，PRESET 平面才求值），
+ * 因此这里不做拒绝，只保证是可序列化的标量。
+ * @param {*} value - 原始 plugins 字段。
+ * @returns {Array} 规范化后的行数组（缺省为空数组）。
+ */
+export function normalizePlugins(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw badRequest('plugins 必须是数组');
+  if (value.length > MAX_PLUGIN_ROWS) throw badRequest(`plugins 最多 ${MAX_PLUGIN_ROWS} 行`);
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < value.length; i += 1) {
+    const row = asObject(value[i], `plugins[${i}]`);
+    const id = text(row.id).trim();
+    const name = text(row.name).trim();
+    if (id === '') throw badRequest(`plugins[${i}].id 不能为空`);
+    if (name === '') throw badRequest(`plugins[${i}].name 不能为空`);
+    if (seen.has(id)) throw badRequest(`plugins 行 id "${id}" 重复；同一预设里的行 id 必须唯一`);
+    seen.add(id);
+    const record = { id, name };
+    for (const key of PLUGIN_ROW_KEYS) {
+      if (key === 'id' || key === 'name') continue;
+      const raw = row[key];
+      if (raw === undefined || raw === null) continue;
+      if (key === 'config') {
+        // 普通行：config 必须是对象。`cordis:group` 行例外 —— 它的 config 是**嵌套
+        // 条目列表**（见 cordis-composition-reference：`group: true` 时 config 是
+        // 一个 entry 数组，patch 可以按 id 往里 insert）。所以先看 group 再判形状。
+        const isGroup = row.group === true;
+        if (isGroup) {
+          if (!Array.isArray(raw)) throw badRequest(`plugins[${i}].config 是 cordis:group 行，必须是嵌套条目数组`);
+          record.config = raw;
+          continue;
+        }
+        if (!isPlainObject(raw)) throw badRequest(`plugins[${i}].config 必须是 JSON 对象`);
+        record.config = raw;
+        continue;
+      }
+      if (key === 'disabled') {
+        // 布尔、`{ __jsExpr }` 标记，或表达式字符串。
+        //
+        // **字符串会被自动升格成 `{ __jsExpr: 字符串 }`**：Loader 的 disabledOf 对
+        // 非标记值走 `Boolean(options.disabled)`，任何非空字符串恒为真 —— 一串看着像
+        // 表达式的 `"process.platform === 'win32'"` 会把这一行在**所有平台**静默停用，
+        // 不报错、不写日志，极难排查。与其拒绝（用户的本意显然是个表达式），不如按
+        // 他的意图把它变成真正的表达式。见 docs/CONTRACT.md §2.7。
+        if (typeof raw === 'boolean') record.disabled = raw;
+        else if (isJsExprMarker(raw)) record.disabled = raw;
+        else if (typeof raw === 'string') record.disabled = { __jsExpr: raw };
+        else throw badRequest(`plugins[${i}].disabled 必须是布尔值、{ __jsExpr: "表达式" } 或表达式字符串`);
+        continue;
+      }
+      if (key === 'inject') {
+        if (!Array.isArray(raw) || raw.some((item) => typeof item !== 'string')) throw badRequest(`plugins[${i}].inject 必须是字符串数组`);
+        record.inject = raw.slice();
+        continue;
+      }
+      if (key === 'isolate') {
+        if (!isPlainObject(raw)) throw badRequest(`plugins[${i}].isolate 必须是 JSON 对象`);
+        record.isolate = raw;
+        continue;
+      }
+      if (key === 'group') {
+        if (typeof raw !== 'boolean') throw badRequest(`plugins[${i}].group 必须是布尔值`);
+        record.group = raw;
+        continue;
+      }
+      // intercept：形状自由，序列化时原样带上
+      record.intercept = raw;
+    }
+    out.push(record);
+  }
+  return out;
+}
+
 /** 目录项引用列表：只保留形如 id 的字符串，去重且保序。 */
 export function normalizeRefs(value) {
   if (value === undefined || value === null) return [];
@@ -218,11 +324,14 @@ export function normalizeValues(value) {
 
 /* ------------------------------ 三种实体 ------------------------------ */
 
-/** §2.1 PresetDefinition。时间戳由 store 负责，这里不管。 */
+/** §2.1 PresetDefinition。时间戳由 store 负责，这里不管。
+ *  plugins 是可选字段：没有这个键时**不写进返回值**，store 层据此区分
+ *  「本次保存没带插件清单」与「用户确实清空了插件清单」，避免旧版编辑界面
+ *  保存一次就把已有插件默默清掉。 */
 export function normalizePresetDefinition(payload) {
   const raw = asObject(payload, 'PresetDefinition');
   const id = normalizeId(raw.id, '预设 id');
-  return {
+  const definition = {
     id,
     name: text(raw.name).trim() || id,
     description: text(raw.description).trim(),
@@ -233,6 +342,8 @@ export function normalizePresetDefinition(payload) {
     mcp: normalizeRefs(raw.mcp),
     skills: normalizeRefs(raw.skills),
   };
+  if (raw.plugins !== undefined) definition.plugins = normalizePlugins(raw.plugins);
+  return definition;
 }
 
 function normalizeEnv(value) {

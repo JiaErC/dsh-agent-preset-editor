@@ -157,10 +157,13 @@ export function createStore(root) {
     return { presets: out.sort(byPresetOrder), broken };
   }
 
-  /** 落盘一个预设：createdAt 保留旧值，updatedAt 每次刷新。 */
+  /** 落盘一个预设：createdAt 保留旧值，updatedAt 每次刷新。
+   *  plugins 缺失时沿用上一次落盘的值（旧版编辑界面不带这个键，不能因此清空）。 */
   function writePreset(definition) {
     const previous = readPreset(definition.id);
     const now = new Date().toISOString();
+    const incomingPlugins = Array.isArray(definition.plugins) ? definition.plugins : null;
+    const previousPlugins = previous && Array.isArray(previous.plugins) ? previous.plugins : [];
     const record = {
       id: definition.id,
       name: definition.name,
@@ -169,6 +172,7 @@ export function createStore(root) {
       prompt: definition.prompt,
       params: definition.params,
       form: definition.form,
+      plugins: incomingPlugins === null ? previousPlugins : incomingPlugins,
       mcp: definition.mcp,
       skills: definition.skills,
       createdAt: previous && typeof previous.createdAt === 'string' ? previous.createdAt : now,

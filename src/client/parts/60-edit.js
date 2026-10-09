@@ -341,7 +341,78 @@ function EdValidateDraft(draft) {
   if (!EdStr(source.name).trim()) issues.push('预设名称不能为空');
   var paramIssues = EdParamIssues(EdArr(source.params));
   if (paramIssues.length) issues.push('参数定义有误：' + paramIssues[0].message);
+  issues = issues.concat(EdPluginRowIssues(EdArr(source.plugins)));
   return issues;
+}
+
+/* ------------------------- Cordis 插件行（plugins） ------------------------- */
+
+/* `id` 用 Loader 的 row id 规则；`name` 是包名或 cordis:group 之类的内置行。 */
+const ED_PLUGIN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+/** 一行里允许出现的键；其余键一律丢弃（host 的 normalizePlugins 同样只认这些）。 */
+const ED_PLUGIN_ROW_KEYS = ['id', 'name', 'config', 'disabled', 'inject', 'intercept', 'isolate', 'group'];
+
+/**
+ * 把任意输入洗成「一行」的形状。非对象、缺 id/name 的项一律丢弃，
+ * 这样从 JSON 里读到脏数据也不会把声明文件写坏。
+ * @returns {{ok: boolean, row: object|null, reason: string}}
+ */
+function EdCleanPluginRow(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, row: null, reason: '不是 JSON 对象' };
+  }
+  var id = EdStr(value.id).trim();
+  var name = EdStr(value.name).trim();
+  if (!id) return { ok: false, row: null, reason: '缺少 id' };
+  if (!ED_PLUGIN_ID_RE.test(id)) return { ok: false, row: null, reason: 'id「' + id + '」含非法字符' };
+  if (!name) return { ok: false, row: null, reason: '缺少 name' };
+  var row = { id: id, name: name };
+  for (var i = 0; i < ED_PLUGIN_ROW_KEYS.length; i += 1) {
+    var key = ED_PLUGIN_ROW_KEYS[i];
+    if (key === 'id' || key === 'name') continue;
+    if (value[key] === undefined || value[key] === null) continue;
+    row[key] = EdClone(value[key]);
+  }
+  return { ok: true, row: row, reason: '' };
+}
+
+/** 整份插件清单的校验：返回面向用户的句子数组（空数组 = 没问题）。 */
+function EdPluginRowIssues(list) {
+  var issues = [];
+  var rows = EdArr(list);
+  var seen = {};
+  for (var i = 0; i < rows.length; i += 1) {
+    var cleaned = EdCleanPluginRow(rows[i]);
+    if (!cleaned.ok) {
+      issues.push('插件清单第 ' + (i + 1) + ' 行有误：' + cleaned.reason);
+      continue;
+    }
+    if (seen[cleaned.row.id] === true) {
+      issues.push('插件清单里行 id「' + cleaned.row.id + '」重复；同一预设内的行 id 必须唯一，否则加载器会撞名');
+      continue;
+    }
+    seen[cleaned.row.id] = true;
+  }
+  return issues;
+}
+
+/**
+ * 清洗整份插件清单（用于「应用 JSON」）。
+ * @returns {{ok: boolean, rows: Array, message: string}}
+ */
+function EdCleanPluginList(value) {
+  if (!Array.isArray(value)) return { ok: false, rows: [], message: '插件清单必须是一个数组（Row[]）' };
+  var rows = [];
+  var seen = {};
+  for (var i = 0; i < value.length; i += 1) {
+    var cleaned = EdCleanPluginRow(value[i]);
+    if (!cleaned.ok) return { ok: false, rows: [], message: '第 ' + (i + 1) + ' 行有误：' + cleaned.reason };
+    if (seen[cleaned.row.id] === true) return { ok: false, rows: [], message: '行 id「' + cleaned.row.id + '」重复' };
+    seen[cleaned.row.id] = true;
+    rows.push(cleaned.row);
+  }
+  return { ok: true, rows: rows, message: '' };
 }
 
 /** The stored (user-owned) definition for an id, or null. */
@@ -534,6 +605,7 @@ function EdDraftFrom(state, presetId) {
     rule: EdRuleFromPreset(stored),
     mcp: EdArr(source.mcp).slice(),
     skills: EdArr(source.skills).slice(),
+    plugins: EdClone(EdArr(source.plugins)) || [],
   };
 }
 
@@ -548,6 +620,9 @@ function EdBuildDefinition(draft) {
     prompt: EdStr(source.prompt),
     params: EdArr(source.params).map(EdCleanParam),
     form: { rule: EdClone(EdArr(source.rule)) || [] },
+    // 原始 Cordis 行必须显式带上：host 的 normalizePlugins 见到这个键才会替换，
+    // 不带就等于「本次没提供插件清单」，store 会沿用上一次落盘的值。
+    plugins: EdClone(EdArr(source.plugins)) || [],
     mcp: EdArr(source.mcp).slice(),
     skills: EdArr(source.skills).slice(),
   };
@@ -1095,6 +1170,92 @@ function EdFormSection(props) {
   );
 }
 
+/* ------------------------ section 4b: 原始 Cordis 插件行 ------------------------ */
+/* Web profile 把整个 agent 平面交给预设自己挂载，所以这一节常常是「有没有工具」的分水岭。 */
+
+function EdPluginsSection(props) {
+  var draft = props.draft || {};
+  var list = EdArr(draft.plugins);
+  var listJson = useMemo(function () { return EdJson(list); }, [list]);
+  var jsonState = useState(listJson);
+  var jsonText = jsonState[0];
+  var setJsonText = jsonState[1];
+  var touchedState = useState(false);
+  var jsonTouched = touchedState[0];
+  var setJsonTouched = touchedState[1];
+
+  // Follow the row list unless the user is mid-edit in the JSON box.
+  useEffect(function () {
+    if (!jsonTouched) setJsonText(listJson);
+  }, [listJson, jsonTouched]);
+
+  var issues = EdPluginRowIssues(list);
+  var ids = [];
+  for (var i = 0; i < list.length; i += 1) {
+    var cleaned = EdCleanPluginRow(list[i]);
+    if (cleaned.ok) ids.push(cleaned.row.id);
+  }
+
+  function applyJson() {
+    var parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (error) {
+      if (props.toast) props.toast.show('插件清单 JSON 解析失败：' + EdMessage(error), 'err');
+      return;
+    }
+    var cleaned = EdCleanPluginList(parsed);
+    if (!cleaned.ok) {
+      if (props.toast) props.toast.show('插件清单不可用：' + cleaned.message + '（已保留原内容）', 'err');
+      return;
+    }
+    setJsonTouched(false);
+    props.onPlugins(cleaned.rows);
+    if (props.toast) props.toast.show('已应用插件清单（' + cleaned.rows.length + ' 行）', 'ok');
+  }
+
+  return h(UiSection, {
+    title: '挂载插件（原始 Cordis 行）',
+    actions: h('span', { style: ED_CODE_STYLE },
+      list.length + ' 行' + (ids.length ? '：' + ids.join(' / ') : '')),
+  },
+    h('div', { style: ED_MUTED_STYLE },
+      '这一节写的是这个预设自己要挂载的 Cordis 行（Row）。Web 界面把 agent 平面交给了预设：',
+      '不在这里挂 tool-fs / tool-pwsh / tool-web / skill-filesystem / tool-skill 等行，',
+      '这个预设的 agent 就读不了文件、跑不了命令、上不了网。'),
+    h('div', { style: ED_NOTICE_STYLE },
+      '第 1 行固定是 persona（由提示词渲染，不用手写）；这里写的行会插在 persona 之后、MCP 与 Skills 行之前。',
+      '行 id 在同一预设内必须唯一；config 里的 !!js 表达式在本编辑器里只能按字符串保存，',
+      '需要求值的表达式请直接改 profile 的 cordis.patch.yml。'),
+    issues.length
+      ? h('div', { style: ED_NOTICE_STYLE }, '存在会被加载器拒绝的问题：', h('br', null), issues.join('；'))
+      : null,
+    h(UiField, {
+      label: '插件行 JSON',
+      info: '数组，每项至少 { id, name }，可带 config / disabled / inject / isolate / group。改完点「应用 JSON」才会写进草稿。',
+    }, h(UiTextarea, {
+      value: jsonText,
+      rows: 12,
+      placeholder: '[]',
+      onChange: function (value) {
+        setJsonTouched(true);
+        setJsonText(value);
+      },
+    })),
+    h('div', { style: ED_CHIPROW_STYLE },
+      h(UiButton, { size: 'sm', variant: 'primary', icon: 'check', disabled: !jsonTouched, onClick: applyJson }, '应用 JSON'),
+      h(UiButton, {
+        size: 'sm',
+        variant: 'ghost',
+        disabled: !jsonTouched,
+        onClick: function () { setJsonTouched(false); setJsonText(listJson); },
+      }, '放弃 JSON 改动'),
+      jsonTouched ? h(UiBadge, { tone: 'warn' }, 'JSON 有未应用的改动') : h(UiBadge, { tone: 'default' }, 'JSON 与草稿一致'),
+      issues.length ? h(UiBadge, { tone: 'err' }, '有 ' + issues.length + ' 个问题') : null
+    )
+  );
+}
+
 /* ------------------------------ section 5 / 6 ------------------------------ */
 /* Which catalogue entries this preset actually mounts.                       */
 
@@ -1468,6 +1629,11 @@ function EditMode(props) {
       toast: toast,
       onRule: function (value) { patchDraft({ rule: value }); },
       onParams: function (value) { patchDraft({ params: value }); },
+    }),
+    h(EdPluginsSection, {
+      draft: draft,
+      toast: toast,
+      onPlugins: function (value) { patchDraft({ plugins: value }); },
     }),
     h(EdCatalogPicker, {
       title: 'MCP 配置',

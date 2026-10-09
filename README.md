@@ -35,6 +35,14 @@ MCP 是一个引用一行；**Skill 无论引用几个都只合成一行**（一
 这是宿主侧 provider 按名唯一的硬约束，违反会让整个预设激活失败，
 详见 [AI-USAGE.md](AI-USAGE.md) 的「Skill 行为什么只能有一行」。
 
+**预设的工具来自它自己挂载的插件行。** Web profile 把所有 agent 工具行（读写文件、跑 shell、
+联网搜索、加载 Skill、待办、交付物卡片、子代理……）在 host 平面整体关掉了，改由**每个预设
+自己挂载**。所以「编辑模式 → 挂载插件（原始 Cordis 行）」这一节不是高级选项，而是决定这个预设
+有没有工具的地方：不挂 `tool-fs` 就读不了文件，不挂 `tool-web` 就上不了网，只挂
+`skill-filesystem` 而没有 `tool-skill`，Skills 就是「注册了但模型用不到」。
+这一节的完整规则（行形态、`cordis:group`、`!!js` 表达式、为什么不能重复写 persona /
+skill-filesystem）见 [docs/CONTRACT.md](docs/CONTRACT.md) §2.7。
+
 ### 「让 AI 帮我写」
 
 **三个**添加弹窗（Agent 预设 / MCP / Skills）的**顶部右侧**各有一个「让 AI 帮我写」按钮。
@@ -117,6 +125,25 @@ GUI 与 agent 的写入都经过同一套校验。
 npm run build   # node scripts/build-client.mjs  —— 把 src/client/parts/*.js 拼成 client.js
 npm run check   # node scripts/check-parts.mjs   —— part 片段语法自查
 npm test        # node tests/verify-browser-half.mjs —— 在 mock 宿主上跑真实 client.js
+node tests/preset-plugins.test.mjs                 # 插件行渲染 / !!js 表达式标记的回归测试
+```
+
+发布预设前建议再跑一遍离线硬校验（不写盘、不联网，直接调用 host 半的真实模块）：
+
+```powershell
+node scripts/validate-preset-draft.mjs <预设定义.json>
+```
+
+它检查：归一化是否会被 400 拒绝、提示词占位与参数是否双向闭合、`form.rule` 是否与参数一一对应、
+生成的行 id 是否重复、必备能力（文件 / shell / 联网 / Skill / 待办 / 交付物）是否挂齐、
+`!!js` 表达式是否真的发射成 `!!js` 标量，以及 `skills[]` 是否只合成一行 `skill-filesystem`。
+
+如果**正在运行的 dsh 进程早于**这些源码改动，那么它的 `/preset/apply` 仍会用旧模块渲染，
+`presets.patch.yml` 会缺行。这时先用本仓的渲染器离线重放受管区块，再重启：
+
+```powershell
+node scripts/republish-managed-block.mjs --dry-run   # 先看每个预设会渲染出几行
+node scripts/republish-managed-block.mjs             # 写回 presets.patch.yml + profile 受管区块
 ```
 
 `npm test` 用的是**构建产物本身**，不是复刻实现：它把 client.js 加载进一个 mock 宿主，
@@ -135,8 +162,12 @@ index.js              host 半入口（ESM）
 client.js             client 半入口（由 parts 拼接生成，勿手改）
 src/host/*.js         host 源码：存储、路由、声明渲染
 src/client/parts/*.js client 源码片段（按文件名升序拼接，无 import/export、无 JSX）
-scripts/build-client.mjs
-tests/verify-browser-half.mjs
+scripts/build-client.mjs           把 parts 拼成 client.js
+scripts/validate-preset-draft.mjs  候选预设的离线硬校验（形状 / 占位 / 能力覆盖 / `!!js`）
+scripts/gen-resume-helper.mjs      「简历助手」预设定义的生成脚本（提示词以模板字符串维护）
+scripts/republish-managed-block.mjs 用本仓渲染器重放受管区块（运行中的进程早于改动时用）
+tests/verify-browser-half.mjs      在 mock 宿主上跑真实 client.js
+tests/preset-plugins.test.mjs      插件行渲染与 `!!js` 表达式标记的回归测试
 locale/{en,zh}.json   Plugin Manager 显示文案
 ```
 

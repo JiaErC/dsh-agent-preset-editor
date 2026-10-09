@@ -196,6 +196,30 @@ function inlineScalar(value) {
 }
 
 /**
+ * `!!js` 表达式标量。
+ *
+ * profile 的条目列表方言把 `!!js` 注册成标量 tag（见 dsh-app-boot 的 JsExpr：
+ * `new yaml.Type("tag:yaml.org,2002:js", { kind: 'scalar', construct: (data) => ({ __jsExpr: data }) })`），
+ * 解析出来就是一个带 `__jsExpr` 的标记对象，Loader 在**条目激活时**才求值。
+ *
+ * 因此编辑器里用 `{ "__jsExpr": "表达式" }` 表达一个表达式值，发射时还原成
+ * `!!js "表达式"` —— 与手写 profile patch 的写法完全一致，能被人手改回。
+ * 没有这一层，插件行里的平台条件只能写成普通字符串，而 Loader 对字符串按
+ * `Boolean('...')` 处理（见 cordis-plugin-loader 的 disabledOf），结果恒为真、
+ * 该行会被静默停用。
+ */
+const JS_EXPR_KEY = '__jsExpr';
+
+function isJsExprMarker(value) {
+  return isPlainObject(value) && Object.keys(value).length === 1 && typeof value[JS_EXPR_KEY] === 'string';
+}
+
+/** `!!js "表达式"`：表达式本体永远用双引号，保证换行/引号都不会破坏 YAML 结构。 */
+function jsExprScalar(expr) {
+  return '!!js ' + doubleQuoted(expr);
+}
+
+/**
  * 多行字符串 → 块标量（`|-` 不带尾换行，`|` 保留一个尾换行）。
  * 任何会让缩进探测有歧义的情形（首行缩进、行尾空白、多个结尾换行、
  * 控制字符）一律放弃，退回双引号。
@@ -221,6 +245,8 @@ function blockScalar(text) {
 
 /** 标量 → 行内形态或块形态。 */
 function emitScalar(value) {
+  // 表达式标记优先于一切：它必须是行内 `!!js` 标量，绝不能落到块形态或对象分支
+  if (isJsExprMarker(value)) return { inline: jsExprScalar(value[JS_EXPR_KEY]) };
   if (typeof value === 'string') {
     const block = blockScalar(value);
     if (block !== null) return block;
@@ -233,6 +259,12 @@ function emitObject(obj, indent, out) {
   for (const key of Object.keys(obj)) {
     const value = obj[key];
     const keyText = inlineScalar(key);
+    // `!!js` 表达式标记必须赶在「对象 → 嵌套映射」之前拦下：它虽然是个对象，
+    // 但语义上是标量，落成嵌套映射就再也不是表达式了。
+    if (isJsExprMarker(value)) {
+      out.push(`${PAD(indent)}${keyText}: ${jsExprScalar(value[JS_EXPR_KEY])}`);
+      continue;
+    }
     if (Array.isArray(value)) {
       if (value.length === 0) {
         out.push(`${PAD(indent)}${keyText}: []`);
@@ -263,6 +295,11 @@ function emitObject(obj, indent, out) {
 
 function emitArray(arr, indent, out) {
   for (const item of arr) {
+    // 同上：表达式标记是标量，不能走「对象 → 紧凑块序列」那条路
+    if (isJsExprMarker(item)) {
+      out.push(`${PAD(indent)}- ${jsExprScalar(item[JS_EXPR_KEY])}`);
+      continue;
+    }
     if (Array.isArray(item)) {
       out.push(`${PAD(indent)}-`);
       emitArray(item, indent + 2, out);
@@ -344,6 +381,22 @@ export function buildPresetRow(definition, values, catalogs, options = {}) {
       config: { prefix: renderPrompt(definition.prompt, values, definition.params) },
     },
   ];
+
+  // 预设自带的 Cordis 行（§2.1 plugins）。位置很关键：排在 persona 之后、MCP 与
+  // Skill 行之前 —— persona 是提示词落点，必须最先；MCP/Skill 行由目录加进来，
+  // 放在最后便于和用户手写的部分区分。
+  //
+  // 为什么必须有这一段：Web profile 的 @deepseek-ai/dsh-web-app/cordis.patch.yml
+  // 把整个 agent 平面在 host 平面 disabled（tool-fs / tool-pwsh / tool-fs-search /
+  // tool-jobs / skill-filesystem / tool-skill / tool-goal / command-goal / plan-mode /
+  // compaction-* / tool-subagent* / workflow-ptc / tool-workflow / agent-instructions /
+  // tool-todo / tool-web …），改由每个预设自己挂载。只渲染 persona 的预设会让 agent
+  // 一个工具都没有：既读不了文件，也搜不了网。手写行让预设能自带完整工具面。
+  //
+  // 行 id 的唯一性由 validate.js 的 normalizePlugins 保证；这里的行对象已经是
+  // 规范化后的副本，直接展开即可（数组/对象由用户负责，加载器会照原样解释）。
+  const customPlugins = Array.isArray(definition.plugins) ? definition.plugins : [];
+  plugins.push(...customPlugins);
 
   for (const ref of definition.mcp || []) {
     const entry = mcpById.get(ref);
