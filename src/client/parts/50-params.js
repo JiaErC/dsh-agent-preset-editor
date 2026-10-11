@@ -22,6 +22,15 @@ const PAR_STYLE = {
   badges: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' },
   muted: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px' },
   form: { display: 'flex', flexDirection: 'column', gap: '10px' },
+  // 「请重启」弹窗用：一段需要被读完的行动说明，不是一行灰字。
+  stack: { display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px', lineHeight: '1.7' },
+  warn: {
+    display: 'flex', flexDirection: 'column', gap: '6px',
+    padding: '10px 12px', borderRadius: '8px',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    color: 'var(--dsw-alias-label-primary)',
+    fontSize: '12px', lineHeight: '1.7',
+  },
 };
 
 /* -------------------------------------------------------------------- *
@@ -263,6 +272,37 @@ function ParBuiltinView(props) {
  * 参数配置模式
  * -------------------------------------------------------------------- */
 
+/**
+ * 保存参数值之后的「请重启 dsh」弹窗。
+ *
+ * 为什么必须是弹窗而不是 toast：这不是「操作成功」的通知，而是一条**动作要求**。
+ * 用户此刻以为已经完事，但新取值还没有被任何进程读到；toast 会自己消失，错过它的
+ * 人只会带着「改了没用」的印象离开 —— 那正是上一轮反馈的来源。所以这里要求用户
+ * 显式按一下「知道了」才算翻篇。
+ *
+ * 也没有做成「一键重启」按钮：重启是宿主进程的事，浏览器里点不到它。把话说清楚
+ * 比摆一个按不动的按钮好。
+ */
+function ParRestartNotice(props) {
+  var info = props.info || {};
+  return h(UiModal, {
+    open: true,
+    title: '参数已保存 —— 请重启 dsh',
+    onClose: props.onClose,
+    footer: h(UiButton, { variant: 'primary', icon: 'check', onClick: props.onClose }, '知道了'),
+  },
+    h('div', { style: PAR_STYLE.stack },
+      h('div', null, '「' + info.presetName + '」的取值已保存，并已写进 DSH 的预设声明。'),
+      h('div', { style: PAR_STYLE.warn },
+        h('div', null, 'DSH 只在启动时读取预设声明，所以这次改动要等重启之后才会被 AI 用上。'),
+        h('div', null, '重启方式：停掉正在运行的 dsh 进程，再用你平时的方式启动（例如 dsh web）。'),
+        h('div', null, '重启后请在新会话里验证 —— 已经开始的会话会保持它启动时的版本。')
+      ),
+      info.note ? h('div', { style: PAR_STYLE.muted }, info.note) : null
+    )
+  );
+}
+
 /** 参数配置模式：顶端动作条 + 低代码表单 + 实时提示词预览 + 引用徽标。 */
 function ParamsMode(props) {
   var state = props.state;
@@ -306,6 +346,10 @@ function ParamsMode(props) {
   var savePair = useState(false);
   var saving = savePair[0];
   var setSaving = savePair[1];
+  // 保存成功后要弹的「请重启 dsh」提示；null 表示不弹。
+  var noticePair = useState(null);
+  var restartNotice = noticePair[0];
+  var setRestartNotice = noticePair[1];
 
   // 换了预设就把本地草稿丢掉，避免把上一个预设的取值带过来。
   useEffect(function () { setDraft(null); }, [presetId]);
@@ -317,16 +361,52 @@ function ParamsMode(props) {
     return ParRenderText(preset.prompt, values, preset.params, props.renderPrompt);
   }, [preset, values, props.renderPrompt]);
 
+  /**
+   * 取值存进插件之后，若这个预设已经发布过，就顺手把新取值写进 DSH 声明。
+   *
+   * 为什么非做不可：DSH 的预设声明是**静态 YAML**，`persona.prefix` 在**发布那一刻**
+   * 就被渲染成固定文本。只存 values 而不重新发布，AI 读到的仍是发布时的旧值 ——
+   * 用户看到的就是「参数改了没反应」，这正是「参数改完不能保存」这个反馈的真实来源。
+   *
+   * 失败不抛：取值已经存好了，同步失败只该降级成一句提醒，不该让整次保存看起来失败。
+   * @returns {Promise<{synced: boolean, reason?: string, error?: Error}>} 同步结果。
+   */
+  var syncDeclaration = function () {
+    if (!rosterEntry) return Promise.resolve({ synced: false, reason: 'not-published' });
+    return Api.applyPreset(preset.id).then(
+      // 保留 apply 的返回：它带着 note 与 restartRequired，弹窗要如实转述。
+      function (result) { return { synced: true, result: result }; },
+      function (error) { return { synced: false, reason: 'failed', error: error }; }
+    );
+  };
+
+  /** 保存后的统一收尾：重载状态、清掉草稿、按同步结果给不同的话。 */
+  var finishSave = function (sync, okText) {
+    return Promise.resolve(props.reload()).then(function () {
+      setDraft(null);
+      if (sync.synced) {
+        LstOk(props.toast, okText);
+        // 值已写进声明，但没有任何进程读过它 —— 这是一条动作要求，用弹窗而不是 toast。
+        setRestartNotice({
+          presetName: preset.name || preset.id,
+          note: sync.result && typeof sync.result.note === 'string' ? sync.result.note : '',
+        });
+      } else if (sync.reason === 'not-published') {
+        LstOk(props.toast, okText + '（这个预设还没发布到 DSH，AI 暂时看不到它）');
+      } else {
+        LstInfo(props.toast, okText + '，但同步到 DSH 声明失败：'
+          + (sync.error && sync.error.message ? sync.error.message : '未知错误'));
+      }
+    });
+  };
+
   var saveValues = function () {
     if (!preset || saving) return;
     var snapshot = LstWith(values, {});
     LstRun(setSaving, props.toast, '保存参数值', function () {
-      return Api.saveValues(preset.id, snapshot).then(function () {
-        return Promise.resolve(props.reload()).then(function () {
-          setDraft(null);
-          LstOk(props.toast, '已保存为我的默认值');
-        });
-      });
+      return Api.saveValues(preset.id, snapshot)
+        .then(syncDeclaration)
+        .then(function (sync) { return finishSave(sync, '已保存为我的默认值'); });
     });
   };
 
@@ -335,12 +415,9 @@ function ParamsMode(props) {
     var fresh = ParValuesFromRule(rule);
     setDraft(fresh);
     LstRun(setSaving, props.toast, '恢复默认值', function () {
-      return Api.saveValues(preset.id, fresh).then(function () {
-        return Promise.resolve(props.reload()).then(function () {
-          setDraft(null);
-          LstOk(props.toast, '已恢复为预设定义的默认值');
-        });
-      });
+      return Api.saveValues(preset.id, fresh)
+        .then(syncDeclaration)
+        .then(function (sync) { return finishSave(sync, '已恢复为预设定义的默认值'); });
     });
   };
 
@@ -483,7 +560,9 @@ function ParamsMode(props) {
         { style: PAR_STYLE.form },
         h(LstNote, null,
           '界面来源：' + (fromForm ? '预设自带的低代码 rule（form.rule）' : '由参数定义自动生成（params → rule）')
-          + '。这里的取值只影响「' + (preset.name || preset.id) + '」这一个预设，保存后立即生效，不必重启。'),
+          + '。这里的取值只影响「' + (preset.name || preset.id) + '」这一个预设。'
+          + 'AI 读到的提示词是「发布到 DSH」那一刻烘好的固定文本，所以「保存」会同时把新取值写进声明 ——'
+          + '但仍需重启 profile、并在新会话里才会生效（已开始的会话保持它启动时的版本）。'),
         form
       )
     ),
@@ -508,6 +587,13 @@ function ParamsMode(props) {
         h(LstNote, null, '正文里的 ' + '{{ $参数名 }}' + ' 已按上面的取值替换；空值回落到参数默认值。'),
         h('pre', { style: LST_STYLE.pre }, preview === '' ? '（提示词为空）' : preview)
       )
-    )
+    ),
+    // 弹窗容器是 position:fixed，挂在面板这一层就能全屏居中。
+    restartNotice
+      ? h(ParRestartNotice, {
+        info: restartNotice,
+        onClose: function () { setRestartNotice(null); },
+      })
+      : null
   );
 }

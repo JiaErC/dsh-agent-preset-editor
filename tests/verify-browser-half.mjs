@@ -88,7 +88,7 @@ if (!raw.includes(ANCHOR)) {
 }
 const src = raw.replace(
   ANCHOR,
-  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt };\n  ' + ANCHOR,
+  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice };\n  ' + ANCHOR,
 )
 
 console.log('# 0. the bundle materializes with only the platform table')
@@ -476,6 +476,236 @@ console.log('\n# 12. list-row layout cannot overlap')
   check('edit-mode rows carry padding', /padding: '10px 8px'/.test(edit))
   check('edit-mode rows shrink-safe', /padding: '10px 8px',\n\s*minWidth: 0,/.test(edit))
   check('edit-mode rows have no fixed height', !/ED_ROW_STYLE[\s\S]{0,200}?height:/.test(edit))
+}
+
+/* ---------------- {{ $x }} highlighting in the prompt field ------------ */
+
+console.log('\n# 13. prompt placeholders highlight in green')
+// A <textarea> cannot colour part of its own value, so the field is a pair:
+// a background-only layer underneath, and a transparent textarea on top. The
+// whole illusion rests on ONE invariant — the layer's text must equal the
+// textarea's text character for character. If a highlighter ever adds or drops
+// a character, every line after it shifts and the green drifts off the braces.
+{
+  const flatten = (node) => {
+    if (node === null || node === undefined) return ''
+    if (Array.isArray(node)) return node.map(flatten).join('')
+    if (typeof node === 'string' || typeof node === 'number') return String(node)
+    if (typeof node === 'object' && Array.isArray(node.children)) return flatten(node.children)
+    return ''
+  }
+  const cssRule = (selector) => {
+    const found = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\{([^}]*)\\}`).exec(raw)
+    return found ? found[1] : ''
+  }
+  const collect = (element, predicate) => {
+    const found = []
+    walk(element, (node) => { if (predicate(node)) found.push(node) })
+    return found
+  }
+
+  const sample = '你是 {{ $role }}。\n任务类型：{{$taskType}}\n备注：{{  $note  }}'
+  const nodes = APE.EdHighlightPrompt(sample)
+  const flat = flatten(nodes)
+
+  check('高亮层文本与原文逐字符一致（仅末尾零宽空格例外）', flat.replace(/\u200b$/, '') === sample, JSON.stringify(flat))
+  check('末尾是不占宽的零宽空格', flat.endsWith('\u200b'))
+  check('原文长度未被动过', flat.replace(/\u200b$/, '').length === sample.length)
+
+  const marks = collect({ type: 'x', props: {}, children: nodes },
+    (n) => n.props && n.props.className === 'ape-textarea-mark').map((n) => flatten(n.children))
+  check('三种写法（含空格/无空格）的占位都被标出', marks.length === 3, JSON.stringify(marks))
+  check('标记内容就是原文片段', JSON.stringify(marks) === JSON.stringify(['{{ $role }}', '{{$taskType}}', '{{  $note  }}']), JSON.stringify(marks))
+
+  const noMarks = APE.EdHighlightPrompt('没有占位符的提示词')
+  check('没有占位符时只回原文本', flatten(noMarks).replace(/\u200b$/, '') === '没有占位符的提示词')
+  check('空提示词不炸', flatten(APE.EdHighlightPrompt('')).replace(/\u200b$/, '') === '')
+
+  // The field itself: with highlight -> two layers; without -> exactly as before.
+  hookCursor = 0
+  const withLayer = APE.UiTextarea({ value: sample, rows: 4, highlight: APE.EdHighlightPrompt })
+  const layers = collect(withLayer, (n) => n.props && n.props.className === 'ape-textarea-hl-layer')
+  const areas = collect(withLayer, (n) => n.type === 'textarea')
+  check('传 highlight 时渲染出恰好一块高亮层', layers.length === 1, `found ${layers.length}`)
+  check('高亮层对无障碍隐藏', layers[0] && layers[0].props['aria-hidden'] === 'true')
+  check('textarea 仍在（文字由它绘制）', areas.length === 1)
+  check('高亮层拿到的是同一个 value', flatten(layers[0] && layers[0].children).replace(/\u200b$/, '') === sample)
+  check('textarea 上挂了滚动同步', areas[0] && typeof areas[0].props.onScroll === 'function')
+
+  hookCursor = 0
+  const withoutLayer = APE.UiTextarea({ value: sample, rows: 4 })
+  check('不传 highlight 时没有高亮层（向后兼容）',
+    collect(withoutLayer, (n) => n.props && n.props.className === 'ape-textarea-hl-layer').length === 0)
+  check('不传 highlight 时不挂 onScroll',
+    (collect(withoutLayer, (n) => n.type === 'textarea')[0] || { props: {} }).props.onScroll === undefined)
+
+  // Geometry: the two boxes must agree on every property that moves text.
+  const layerCss = cssRule('.ape-textarea-hl-layer')
+  const areaCss = cssRule('.ape-textarea')
+  check('高亮层与 textarea 用同一内边距', /padding:6px 8px/.test(layerCss) && /padding:6px 8px/.test(areaCss))
+  check('高亮层与 textarea 用同一字号行高', /font-size:13px;line-height:20px/.test(layerCss))
+  check('高亮层保留换行与断词语义', /white-space:pre-wrap/.test(layerCss) && /overflow-wrap:break-word/.test(layerCss))
+  check('高亮层用同宽边框占位', /border:\.5px solid transparent/.test(layerCss))
+  check('两层都为滚动条留同样的宽度', /scrollbar-gutter:stable/.test(layerCss) && /scrollbar-gutter:stable/.test(cssRule('.ape-textarea-hl>.ape-textarea')))
+  check('高亮层只画背景（文字透明）', /color:transparent/.test(layerCss))
+  check('标记用主题的绿色 token', /--dsw-alias-state-success-tertiary/.test(cssRule('.ape-textarea-mark')))
+  check('编辑模式确实把高亮器接上了', /highlight: EdHighlightPrompt/.test(readFileSync(join(root, 'src/client/parts/60-edit.js'), 'utf8')))
+}
+
+/* ------------- 参数配置模式：改值 → dirty → 保存调用 --------------- */
+
+console.log('\n# 14. ParamsMode: edit a value, then save')
+{
+  const collect = (element, predicate) => {
+    const found = []
+    walk(element, (node) => { if (predicate(node)) found.push(node) })
+    return found
+  }
+  const preset = {
+    id: 'p1', name: 'P1', description: '', order: 1,
+    prompt: '{{ $a }} / {{ $b }}',
+    params: [
+      { name: 'a', label: 'A', type: 'text', default: 'A0' },
+      { name: 'b', label: 'B', type: 'text', default: 'B0' },
+    ],
+    form: { rule: [] },
+    mcp: [], skills: [],
+  }
+  const state = {
+    presets: [preset], mcp: [], skills: [], values: {},
+    dsh: { roster: [], defaultId: null, sessionPreset: null, sessionPresetLocked: false },
+    paths: { root: 'x', declarations: 'y' },
+  }
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: init && init.body ? String(init.body) : '' })
+    return { ok: true, status: 200, async json() { return { ok: true, data: { id: 'p1' } } } }
+  }
+  const props = {
+    ctx: makeCtx({}),
+    sessionId: 's1',
+    state,
+    presetId: 'p1',
+    reload: async () => {},
+    setMode: () => {},
+    toast: { show() {} },
+    renderPrompt: APE.renderPrompt,
+  }
+  const findSave = (tree) => collect(tree, (n) => n.type === APE.UiButton
+    && JSON.stringify(n.children || '').includes('保存为我的默认值'))[0]
+
+  // mock 的 hook 槽是模块级数组：前面用例的渲染会泄漏进来。先清空，
+  // 否则 draft 一开始就是非 null，下面每一条断言量的都是上一段的残留。
+  hookStates.length = 0
+  hookCursor = 0
+  const first = APE.ParamsMode(props)
+  const forms = collect(first, (n) => n.type === APE.LcForm)
+  check('参数配置模式渲染出 LcForm', forms.length === 1, `found ${forms.length}`)
+  check('空 form.rule 时由 params 生成可编辑字段',
+    !!forms[0] && forms[0].props.rule.filter((r) => r.field).length === 2,
+    forms[0] ? JSON.stringify(forms[0].props.rule.map((r) => r.type + ':' + r.field)) : 'no form')
+  check('初值取参数默认值',
+    !!forms[0] && forms[0].props.value.a === 'A0' && forms[0].props.value.b === 'B0',
+    forms[0] ? JSON.stringify(forms[0].props.value) : '')
+  const before = findSave(first)
+  check('未改动时保存按钮是禁用的', !!before && before.props.disabled === true, before && String(before.props.disabled))
+
+  // 改一个字段，然后重渲染 —— 这一步走的就是用户在表单里输入后的真实路径。
+  if (forms[0]) forms[0].props.onChange({ a: 'A1', b: 'B0' }, 'a', 'A1')
+  hookCursor = 0
+  const second = APE.ParamsMode(props)
+  const after = findSave(second)
+  check('改动后保存按钮变为可用', !!after && after.props.disabled === false, after && String(after.props.disabled))
+  const textOf = (node) => {
+    if (node === null || node === undefined) return ''
+    if (Array.isArray(node)) return node.map(textOf).join('')
+    if (typeof node === 'string' || typeof node === 'number') return String(node)
+    if (typeof node === 'object' && Array.isArray(node.children)) return textOf(node.children)
+    return ''
+  }
+  check('改动被标记为未保存', textOf(second).includes('有未保存的修改'), textOf(second).slice(0, 120))
+
+  // 点保存：必须真的发出 /preset/values，且带上新值。
+  calls.length = 0
+  if (after && typeof after.props.onClick === 'function') after.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  const posted = calls.find((c) => c.url.includes('/preset/values'))
+  check('点击后发出了 /preset/values', posted !== undefined, JSON.stringify(calls.map((c) => c.url)))
+  check('请求体带上了改动后的值', !!posted && posted.body.includes('A1'), posted && posted.body)
+  check('请求体带上了预设 id', !!posted && posted.body.includes('p1'), posted && posted.body)
+
+  // 已发布的预设：只存 values 还不够 —— DSH 的声明是静态 YAML，新取值必须同时写回去，
+  // 否则 AI 读到的仍是发布那一刻烘死的旧文本（即用户反馈的「改了没反应」）。
+  {
+    const published = { ...state, dsh: { ...state.dsh, roster: [{ id: 'p1', isDefault: false }] } }
+    const props2 = { ...props, state: published }
+    hookStates.length = 0
+    hookCursor = 0
+    const a = APE.ParamsMode(props2)
+    const f = collect(a, (n) => n.type === APE.LcForm)[0]
+    if (f) f.props.onChange({ a: 'A2', b: 'B0' }, 'a', 'A2')
+    hookCursor = 0
+    const s2 = findSave(APE.ParamsMode(props2))
+    calls.length = 0
+    if (s2 && typeof s2.props.onClick === 'function') s2.props.onClick()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    const urls = calls.map((c) => c.url)
+    check('已发布预设：保存会同时刷新 DSH 声明',
+      urls.some((u) => u.includes('/preset/apply')), JSON.stringify(urls))
+    check('已发布预设：先存 values 再写声明',
+      urls.findIndex((u) => u.includes('/preset/values')) < urls.findIndex((u) => u.includes('/preset/apply')),
+      JSON.stringify(urls))
+
+    // 存完之后必须弹窗要求重启 —— toast 会自己消失，而这是一条动作要求。
+    // 直接测弹窗组件本身：走 ParamsMode 的重渲染会绕进 mock 的 hook 索引细节，
+    // 而这里真正要钉住的是「弹窗存在、话说清楚、点得动」，与谁触发它无关。
+    const notice = APE.ParRestartNotice({ info: { presetName: 'P1', note: '声明已写入 profile' }, onClose() {} })
+    const modals = collect(notice, (n) => n.type === APE.UiModal)
+    check('保存后弹出的是一个模态弹窗（不是会自己消失的 toast）', modals.length === 1, `found ${modals.length}`)
+    const noticeText = textOf(notice)
+    check('弹窗标题点名要重启 dsh', String(modals[0].props.title).includes('请重启 dsh'), String(modals[0].props.title))
+    check('弹窗解释了为什么必须重启', noticeText.includes('启动时读取预设声明'))
+    check('弹窗给了重启办法', noticeText.includes('停掉正在运行的 dsh 进程'))
+    check('弹窗提醒在新会话里验证', noticeText.includes('已经开始的会话'))
+    check('弹窗带一个确认按钮', textOf(modals[0].props.footer).includes('知道了'), textOf(modals[0].props.footer))
+    check('弹窗可以关闭', !!modals[0] && typeof modals[0].props.onClose === 'function')
+    check('弹窗转述了宿主返回的 note', noticeText.includes('声明已写入 profile'))
+
+    // 端到端再确认一次：组件本身对是一回事，「ParamsMode 有没有把它挂上去」是另一回事。
+    // 注意 mock 渲染器不展开函数组件，所以这里看到的是 ParRestartNotice 元素本身，
+    // 而不是它渲染出来的 UiModal —— UiModal 由上面那组断言单独覆盖。
+    hookCursor = 0
+    const e2e = APE.ParamsMode(props2)
+    const mounted = collect(e2e, (n) => n.type === APE.ParRestartNotice)
+    check('端到端：ParamsMode 保存后挂上了重启弹窗', mounted.length === 1, `found ${mounted.length}`)
+    check('端到端：弹窗拿到了预设名与回执',
+      !!mounted[0] && mounted[0].props.info.presetName === 'P1',
+      mounted[0] ? JSON.stringify(mounted[0].props.info) : 'none')
+  }
+
+  // 未发布的预设不该出现这个弹窗：没有写声明，也就没什么可重启的。
+  {
+    hookStates.length = 0
+    hookCursor = 0
+    check('未发布预设：不弹重启提示',
+      collect(APE.ParamsMode(props), (n) => n.type === APE.UiModal).length === 0)
+  }
+
+  // 未发布的预设不该去碰声明 —— 那会凭空给它建一条 preset 行。
+  {
+    calls.length = 0
+    hookStates.length = 0
+    hookCursor = 0
+    const a = APE.ParamsMode(props)
+    const f = collect(a, (n) => n.type === APE.LcForm)[0]
+    if (f) f.props.onChange({ a: 'A3', b: 'B0' }, 'a', 'A3')
+    hookCursor = 0
+    const s = findSave(APE.ParamsMode(props))
+    if (s && typeof s.props.onClick === 'function') s.props.onClick()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    check('未发布预设：保存不会去动 DSH 声明',
+      !calls.some((c) => c.url.includes('/preset/apply')), JSON.stringify(calls.map((c) => c.url)))
+  }
 }
 
 console.log('')

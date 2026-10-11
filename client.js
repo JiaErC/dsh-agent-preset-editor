@@ -189,6 +189,14 @@ const APE_CSS = `
 .ape-textarea{box-sizing:border-box;display:block;width:100%;min-height:64px;padding:6px 8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);outline:0;resize:vertical}
 .ape-textarea:focus{border-color:var(--dsw-alias-state-business-primary)}
 .ape-textarea:disabled{opacity:.5;resize:none}
+/* {{ $x }} 语法高亮：一块只画背景的高亮层铺在透明 textarea 底下。
+   两层的盒模型、字体、行高、内边距、换行规则必须逐项一致，否则绿底会逐行错位；
+   scrollbar-gutter:stable 让两者都为滚动条预留同样的宽度（textarea 有滚动条、
+   高亮层没有的话，可用宽度不同，换行位置就会分岔）。 */
+.ape-textarea-hl{position:relative;display:block;width:100%}
+.ape-textarea-hl>.ape-textarea{position:relative;z-index:1;background:transparent;scrollbar-gutter:stable}
+.ape-textarea-hl-layer{position:absolute;inset:0;z-index:0;box-sizing:border-box;overflow:hidden;pointer-events:none;padding:6px 8px;border:.5px solid transparent;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);font-family:inherit;font-size:13px;line-height:20px;white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;color:transparent;scrollbar-gutter:stable}
+.ape-textarea-mark{background:var(--dsw-alias-state-success-tertiary);border-radius:3px}
 .ape-readonly{background:var(--dsw-alias-bg-skeleton);color:var(--dsw-alias-label-secondary)}
 .ape-select-wrap{box-sizing:border-box;position:relative;display:flex;align-items:center;height:32px;width:100%;padding:0 8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1)}
 .ape-select-wrap:focus-within{border-color:var(--dsw-alias-state-business-primary)}
@@ -639,27 +647,49 @@ const UiTextarea = apeForwardRef(function UiTextarea(props, ref) {
   const setRef = useMemo(function () { return apeMergeRefs(innerRef, ref); }, [innerRef, ref]);
   const disabled = p.disabled === true;
   const rows = clamp(apeNum(p.rows, 3), 1, 40);
+  const value = apeStr(p.value, '');
+  // 可选语法高亮：`highlight(text)` 返回一组只带背景的节点，铺在透明的 textarea 底下。
+  // <textarea> 没有给局部文字上色的能力，所以匹配片段放在这一层里上色，文字本身仍由
+  // textarea 绘制 —— 两层的字符必须逐一对齐，因此 highlighter 只许切分、不许增删字符。
+  const highlight = typeof p.highlight === 'function' ? p.highlight : null;
+  const layerRef = useRef(null);
+  const onScroll = function (event) {
+    const layer = layerRef.current;
+    const target = event && event.target ? event.target : null;
+    if (!layer || !target) return;
+    layer.scrollTop = target.scrollTop;
+    layer.scrollLeft = target.scrollLeft;
+  };
+  const field = h('textarea', {
+    ref: setRef,
+    className: cx('ape-textarea', disabled && 'ape-is-disabled'),
+    rows: rows,
+    value: value,
+    placeholder: typeof p.placeholder === 'string' ? p.placeholder : undefined,
+    disabled: disabled,
+    readOnly: p.readOnly === true,
+    autoFocus: p.autoFocus === true,
+    spellCheck: p.spellCheck === undefined ? false : p.spellCheck === true,
+    wrap: 'soft',
+    'aria-label': typeof p.ariaLabel === 'string' ? p.ariaLabel : undefined,
+    onChange: function (event) {
+      if (typeof p.onChange === 'function') p.onChange(apeStr(event && event.target ? event.target.value : '', ''));
+    },
+    onKeyDown: typeof p.onKeyDown === 'function' ? p.onKeyDown : undefined,
+    onBlur: typeof p.onBlur === 'function' ? p.onBlur : undefined,
+    onSelect: typeof p.onSelect === 'function' ? p.onSelect : undefined,
+    onScroll: highlight ? onScroll : undefined,
+  });
+  if (!highlight) return h(Fragment, null, apeStyle(), field);
   return h(Fragment, null,
     apeStyle(),
-    h('textarea', {
-      ref: setRef,
-      className: cx('ape-textarea', disabled && 'ape-is-disabled'),
-      rows: rows,
-      value: apeStr(p.value, ''),
-      placeholder: typeof p.placeholder === 'string' ? p.placeholder : undefined,
-      disabled: disabled,
-      readOnly: p.readOnly === true,
-      autoFocus: p.autoFocus === true,
-      spellCheck: p.spellCheck === undefined ? false : p.spellCheck === true,
-      wrap: 'soft',
-      'aria-label': typeof p.ariaLabel === 'string' ? p.ariaLabel : undefined,
-      onChange: function (event) {
-        if (typeof p.onChange === 'function') p.onChange(apeStr(event && event.target ? event.target.value : '', ''));
-      },
-      onKeyDown: typeof p.onKeyDown === 'function' ? p.onKeyDown : undefined,
-      onBlur: typeof p.onBlur === 'function' ? p.onBlur : undefined,
-      onSelect: typeof p.onSelect === 'function' ? p.onSelect : undefined,
-    }));
+    h('div', { className: 'ape-textarea-hl' },
+      h('div', {
+        className: 'ape-textarea-hl-layer',
+        'aria-hidden': 'true',
+        ref: layerRef,
+      }, highlight(value)),
+      field));
 });
 UiTextarea.displayName = 'UiTextarea';
 
@@ -3347,6 +3377,15 @@ const PAR_STYLE = {
   badges: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' },
   muted: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px' },
   form: { display: 'flex', flexDirection: 'column', gap: '10px' },
+  // 「请重启」弹窗用：一段需要被读完的行动说明，不是一行灰字。
+  stack: { display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px', lineHeight: '1.7' },
+  warn: {
+    display: 'flex', flexDirection: 'column', gap: '6px',
+    padding: '10px 12px', borderRadius: '8px',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    color: 'var(--dsw-alias-label-primary)',
+    fontSize: '12px', lineHeight: '1.7',
+  },
 };
 
 /* -------------------------------------------------------------------- *
@@ -3588,6 +3627,37 @@ function ParBuiltinView(props) {
  * 参数配置模式
  * -------------------------------------------------------------------- */
 
+/**
+ * 保存参数值之后的「请重启 dsh」弹窗。
+ *
+ * 为什么必须是弹窗而不是 toast：这不是「操作成功」的通知，而是一条**动作要求**。
+ * 用户此刻以为已经完事，但新取值还没有被任何进程读到；toast 会自己消失，错过它的
+ * 人只会带着「改了没用」的印象离开 —— 那正是上一轮反馈的来源。所以这里要求用户
+ * 显式按一下「知道了」才算翻篇。
+ *
+ * 也没有做成「一键重启」按钮：重启是宿主进程的事，浏览器里点不到它。把话说清楚
+ * 比摆一个按不动的按钮好。
+ */
+function ParRestartNotice(props) {
+  var info = props.info || {};
+  return h(UiModal, {
+    open: true,
+    title: '参数已保存 —— 请重启 dsh',
+    onClose: props.onClose,
+    footer: h(UiButton, { variant: 'primary', icon: 'check', onClick: props.onClose }, '知道了'),
+  },
+    h('div', { style: PAR_STYLE.stack },
+      h('div', null, '「' + info.presetName + '」的取值已保存，并已写进 DSH 的预设声明。'),
+      h('div', { style: PAR_STYLE.warn },
+        h('div', null, 'DSH 只在启动时读取预设声明，所以这次改动要等重启之后才会被 AI 用上。'),
+        h('div', null, '重启方式：停掉正在运行的 dsh 进程，再用你平时的方式启动（例如 dsh web）。'),
+        h('div', null, '重启后请在新会话里验证 —— 已经开始的会话会保持它启动时的版本。')
+      ),
+      info.note ? h('div', { style: PAR_STYLE.muted }, info.note) : null
+    )
+  );
+}
+
 /** 参数配置模式：顶端动作条 + 低代码表单 + 实时提示词预览 + 引用徽标。 */
 function ParamsMode(props) {
   var state = props.state;
@@ -3631,6 +3701,10 @@ function ParamsMode(props) {
   var savePair = useState(false);
   var saving = savePair[0];
   var setSaving = savePair[1];
+  // 保存成功后要弹的「请重启 dsh」提示；null 表示不弹。
+  var noticePair = useState(null);
+  var restartNotice = noticePair[0];
+  var setRestartNotice = noticePair[1];
 
   // 换了预设就把本地草稿丢掉，避免把上一个预设的取值带过来。
   useEffect(function () { setDraft(null); }, [presetId]);
@@ -3642,16 +3716,52 @@ function ParamsMode(props) {
     return ParRenderText(preset.prompt, values, preset.params, props.renderPrompt);
   }, [preset, values, props.renderPrompt]);
 
+  /**
+   * 取值存进插件之后，若这个预设已经发布过，就顺手把新取值写进 DSH 声明。
+   *
+   * 为什么非做不可：DSH 的预设声明是**静态 YAML**，`persona.prefix` 在**发布那一刻**
+   * 就被渲染成固定文本。只存 values 而不重新发布，AI 读到的仍是发布时的旧值 ——
+   * 用户看到的就是「参数改了没反应」，这正是「参数改完不能保存」这个反馈的真实来源。
+   *
+   * 失败不抛：取值已经存好了，同步失败只该降级成一句提醒，不该让整次保存看起来失败。
+   * @returns {Promise<{synced: boolean, reason?: string, error?: Error}>} 同步结果。
+   */
+  var syncDeclaration = function () {
+    if (!rosterEntry) return Promise.resolve({ synced: false, reason: 'not-published' });
+    return Api.applyPreset(preset.id).then(
+      // 保留 apply 的返回：它带着 note 与 restartRequired，弹窗要如实转述。
+      function (result) { return { synced: true, result: result }; },
+      function (error) { return { synced: false, reason: 'failed', error: error }; }
+    );
+  };
+
+  /** 保存后的统一收尾：重载状态、清掉草稿、按同步结果给不同的话。 */
+  var finishSave = function (sync, okText) {
+    return Promise.resolve(props.reload()).then(function () {
+      setDraft(null);
+      if (sync.synced) {
+        LstOk(props.toast, okText);
+        // 值已写进声明，但没有任何进程读过它 —— 这是一条动作要求，用弹窗而不是 toast。
+        setRestartNotice({
+          presetName: preset.name || preset.id,
+          note: sync.result && typeof sync.result.note === 'string' ? sync.result.note : '',
+        });
+      } else if (sync.reason === 'not-published') {
+        LstOk(props.toast, okText + '（这个预设还没发布到 DSH，AI 暂时看不到它）');
+      } else {
+        LstInfo(props.toast, okText + '，但同步到 DSH 声明失败：'
+          + (sync.error && sync.error.message ? sync.error.message : '未知错误'));
+      }
+    });
+  };
+
   var saveValues = function () {
     if (!preset || saving) return;
     var snapshot = LstWith(values, {});
     LstRun(setSaving, props.toast, '保存参数值', function () {
-      return Api.saveValues(preset.id, snapshot).then(function () {
-        return Promise.resolve(props.reload()).then(function () {
-          setDraft(null);
-          LstOk(props.toast, '已保存为我的默认值');
-        });
-      });
+      return Api.saveValues(preset.id, snapshot)
+        .then(syncDeclaration)
+        .then(function (sync) { return finishSave(sync, '已保存为我的默认值'); });
     });
   };
 
@@ -3660,12 +3770,9 @@ function ParamsMode(props) {
     var fresh = ParValuesFromRule(rule);
     setDraft(fresh);
     LstRun(setSaving, props.toast, '恢复默认值', function () {
-      return Api.saveValues(preset.id, fresh).then(function () {
-        return Promise.resolve(props.reload()).then(function () {
-          setDraft(null);
-          LstOk(props.toast, '已恢复为预设定义的默认值');
-        });
-      });
+      return Api.saveValues(preset.id, fresh)
+        .then(syncDeclaration)
+        .then(function (sync) { return finishSave(sync, '已恢复为预设定义的默认值'); });
     });
   };
 
@@ -3808,7 +3915,9 @@ function ParamsMode(props) {
         { style: PAR_STYLE.form },
         h(LstNote, null,
           '界面来源：' + (fromForm ? '预设自带的低代码 rule（form.rule）' : '由参数定义自动生成（params → rule）')
-          + '。这里的取值只影响「' + (preset.name || preset.id) + '」这一个预设，保存后立即生效，不必重启。'),
+          + '。这里的取值只影响「' + (preset.name || preset.id) + '」这一个预设。'
+          + 'AI 读到的提示词是「发布到 DSH」那一刻烘好的固定文本，所以「保存」会同时把新取值写进声明 ——'
+          + '但仍需重启 profile、并在新会话里才会生效（已开始的会话保持它启动时的版本）。'),
         form
       )
     ),
@@ -3833,7 +3942,14 @@ function ParamsMode(props) {
         h(LstNote, null, '正文里的 ' + '{{ $参数名 }}' + ' 已按上面的取值替换；空值回落到参数默认值。'),
         h('pre', { style: LST_STYLE.pre }, preview === '' ? '（提示词为空）' : preview)
       )
-    )
+    ),
+    // 弹窗容器是 position:fixed，挂在面板这一层就能全屏居中。
+    restartNotice
+      ? h(ParRestartNotice, {
+        info: restartNotice,
+        onClose: function () { setRestartNotice(null); },
+      })
+      : null
   );
 }
 
@@ -4565,6 +4681,36 @@ function EdBasicsSection(props) {
 /* -------------------------------- section 2 -------------------------------- */
 /* The prompt itself: textarea, placeholder scan and cursor-accurate inserts.  */
 
+/**
+ * 把提示词里的 `{{ $name }}` 包进只带背景的 span，交给 UiTextarea 的高亮层。
+ *
+ * 高亮层与 textarea 必须逐字符对齐，所以这里**只切分、不增删**：原文的每一段都原样
+ * 进入节点树，唯一的例外是末尾那个零宽空格 —— 它不占宽度，只用来防止最后一行恰好是
+ * 空行时高亮层比 textarea 少一行。
+ * @param {string} text - 提示词原文。
+ * @returns {Array} 可直接作为 children 的节点数组。
+ */
+function EdHighlightPrompt(text) {
+  var source = EdStr(text);
+  var nodes = [];
+  var re = new RegExp(ED_PLACEHOLDER_SOURCE, 'g');
+  var last = 0;
+  var index = 0;
+  var match = re.exec(source);
+  while (match !== null) {
+    if (match.index > last) nodes.push(source.slice(last, match.index));
+    nodes.push(h('span', { key: 'ph' + index, className: 'ape-textarea-mark' }, match[0]));
+    index += 1;
+    last = match.index + match[0].length;
+    // 零长匹配会让 exec 原地打转；正常语法不会走到这里，留着只是不给自己留死循环。
+    if (match[0] === '') re.lastIndex += 1;
+    match = re.exec(source);
+  }
+  if (last < source.length) nodes.push(source.slice(last));
+  nodes.push('\u200b');
+  return nodes;
+}
+
 /** One click-to-insert chip for a parameter placeholder. */
 function EdPlaceholderChip(props) {
   return h(UiButton, {
@@ -4659,6 +4805,8 @@ function EdPromptSection(props) {
       value: prompt,
       rows: 10,
       inputRef: inputRef,
+      // 正文里的 {{ $name }} 在此高亮成绿底，写作时一眼能看出参数落在哪。
+      highlight: EdHighlightPrompt,
       placeholder: '你是 {{ $role }}。\n任务类型：{{ $taskType }}\n',
       onChange: props.onPrompt,
     })),

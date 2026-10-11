@@ -61,6 +61,14 @@ const APE_CSS = `
 .ape-textarea{box-sizing:border-box;display:block;width:100%;min-height:64px;padding:6px 8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);outline:0;resize:vertical}
 .ape-textarea:focus{border-color:var(--dsw-alias-state-business-primary)}
 .ape-textarea:disabled{opacity:.5;resize:none}
+/* {{ $x }} 语法高亮：一块只画背景的高亮层铺在透明 textarea 底下。
+   两层的盒模型、字体、行高、内边距、换行规则必须逐项一致，否则绿底会逐行错位；
+   scrollbar-gutter:stable 让两者都为滚动条预留同样的宽度（textarea 有滚动条、
+   高亮层没有的话，可用宽度不同，换行位置就会分岔）。 */
+.ape-textarea-hl{position:relative;display:block;width:100%}
+.ape-textarea-hl>.ape-textarea{position:relative;z-index:1;background:transparent;scrollbar-gutter:stable}
+.ape-textarea-hl-layer{position:absolute;inset:0;z-index:0;box-sizing:border-box;overflow:hidden;pointer-events:none;padding:6px 8px;border:.5px solid transparent;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);font-family:inherit;font-size:13px;line-height:20px;white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;color:transparent;scrollbar-gutter:stable}
+.ape-textarea-mark{background:var(--dsw-alias-state-success-tertiary);border-radius:3px}
 .ape-readonly{background:var(--dsw-alias-bg-skeleton);color:var(--dsw-alias-label-secondary)}
 .ape-select-wrap{box-sizing:border-box;position:relative;display:flex;align-items:center;height:32px;width:100%;padding:0 8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1)}
 .ape-select-wrap:focus-within{border-color:var(--dsw-alias-state-business-primary)}
@@ -511,27 +519,49 @@ const UiTextarea = apeForwardRef(function UiTextarea(props, ref) {
   const setRef = useMemo(function () { return apeMergeRefs(innerRef, ref); }, [innerRef, ref]);
   const disabled = p.disabled === true;
   const rows = clamp(apeNum(p.rows, 3), 1, 40);
+  const value = apeStr(p.value, '');
+  // 可选语法高亮：`highlight(text)` 返回一组只带背景的节点，铺在透明的 textarea 底下。
+  // <textarea> 没有给局部文字上色的能力，所以匹配片段放在这一层里上色，文字本身仍由
+  // textarea 绘制 —— 两层的字符必须逐一对齐，因此 highlighter 只许切分、不许增删字符。
+  const highlight = typeof p.highlight === 'function' ? p.highlight : null;
+  const layerRef = useRef(null);
+  const onScroll = function (event) {
+    const layer = layerRef.current;
+    const target = event && event.target ? event.target : null;
+    if (!layer || !target) return;
+    layer.scrollTop = target.scrollTop;
+    layer.scrollLeft = target.scrollLeft;
+  };
+  const field = h('textarea', {
+    ref: setRef,
+    className: cx('ape-textarea', disabled && 'ape-is-disabled'),
+    rows: rows,
+    value: value,
+    placeholder: typeof p.placeholder === 'string' ? p.placeholder : undefined,
+    disabled: disabled,
+    readOnly: p.readOnly === true,
+    autoFocus: p.autoFocus === true,
+    spellCheck: p.spellCheck === undefined ? false : p.spellCheck === true,
+    wrap: 'soft',
+    'aria-label': typeof p.ariaLabel === 'string' ? p.ariaLabel : undefined,
+    onChange: function (event) {
+      if (typeof p.onChange === 'function') p.onChange(apeStr(event && event.target ? event.target.value : '', ''));
+    },
+    onKeyDown: typeof p.onKeyDown === 'function' ? p.onKeyDown : undefined,
+    onBlur: typeof p.onBlur === 'function' ? p.onBlur : undefined,
+    onSelect: typeof p.onSelect === 'function' ? p.onSelect : undefined,
+    onScroll: highlight ? onScroll : undefined,
+  });
+  if (!highlight) return h(Fragment, null, apeStyle(), field);
   return h(Fragment, null,
     apeStyle(),
-    h('textarea', {
-      ref: setRef,
-      className: cx('ape-textarea', disabled && 'ape-is-disabled'),
-      rows: rows,
-      value: apeStr(p.value, ''),
-      placeholder: typeof p.placeholder === 'string' ? p.placeholder : undefined,
-      disabled: disabled,
-      readOnly: p.readOnly === true,
-      autoFocus: p.autoFocus === true,
-      spellCheck: p.spellCheck === undefined ? false : p.spellCheck === true,
-      wrap: 'soft',
-      'aria-label': typeof p.ariaLabel === 'string' ? p.ariaLabel : undefined,
-      onChange: function (event) {
-        if (typeof p.onChange === 'function') p.onChange(apeStr(event && event.target ? event.target.value : '', ''));
-      },
-      onKeyDown: typeof p.onKeyDown === 'function' ? p.onKeyDown : undefined,
-      onBlur: typeof p.onBlur === 'function' ? p.onBlur : undefined,
-      onSelect: typeof p.onSelect === 'function' ? p.onSelect : undefined,
-    }));
+    h('div', { className: 'ape-textarea-hl' },
+      h('div', {
+        className: 'ape-textarea-hl-layer',
+        'aria-hidden': 'true',
+        ref: layerRef,
+      }, highlight(value)),
+      field));
 });
 UiTextarea.displayName = 'UiTextarea';
 

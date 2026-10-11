@@ -725,6 +725,36 @@ function EdBasicsSection(props) {
 /* -------------------------------- section 2 -------------------------------- */
 /* The prompt itself: textarea, placeholder scan and cursor-accurate inserts.  */
 
+/**
+ * 把提示词里的 `{{ $name }}` 包进只带背景的 span，交给 UiTextarea 的高亮层。
+ *
+ * 高亮层与 textarea 必须逐字符对齐，所以这里**只切分、不增删**：原文的每一段都原样
+ * 进入节点树，唯一的例外是末尾那个零宽空格 —— 它不占宽度，只用来防止最后一行恰好是
+ * 空行时高亮层比 textarea 少一行。
+ * @param {string} text - 提示词原文。
+ * @returns {Array} 可直接作为 children 的节点数组。
+ */
+function EdHighlightPrompt(text) {
+  var source = EdStr(text);
+  var nodes = [];
+  var re = new RegExp(ED_PLACEHOLDER_SOURCE, 'g');
+  var last = 0;
+  var index = 0;
+  var match = re.exec(source);
+  while (match !== null) {
+    if (match.index > last) nodes.push(source.slice(last, match.index));
+    nodes.push(h('span', { key: 'ph' + index, className: 'ape-textarea-mark' }, match[0]));
+    index += 1;
+    last = match.index + match[0].length;
+    // 零长匹配会让 exec 原地打转；正常语法不会走到这里，留着只是不给自己留死循环。
+    if (match[0] === '') re.lastIndex += 1;
+    match = re.exec(source);
+  }
+  if (last < source.length) nodes.push(source.slice(last));
+  nodes.push('\u200b');
+  return nodes;
+}
+
 /** One click-to-insert chip for a parameter placeholder. */
 function EdPlaceholderChip(props) {
   return h(UiButton, {
@@ -819,6 +849,8 @@ function EdPromptSection(props) {
       value: prompt,
       rows: 10,
       inputRef: inputRef,
+      // 正文里的 {{ $name }} 在此高亮成绿底，写作时一眼能看出参数落在哪。
+      highlight: EdHighlightPrompt,
       placeholder: '你是 {{ $role }}。\n任务类型：{{ $taskType }}\n',
       onChange: props.onPrompt,
     })),
