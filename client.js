@@ -4333,6 +4333,51 @@ function EdCleanPluginRow(value) {
   return { ok: true, row: row, reason: '' };
 }
 
+/**
+ * 已知需要「必需 config」的内置插件 —— 与 host 半 validate.js 的
+ * REQUIRED_PLUGIN_CONFIG 保持一致（那边是最后一道闸，这里是尽早提示）。
+ *
+ * 漏掉这些字段，保存和发布都不会报错，只会在 profile boot 时让 `preset-<id>` 变成
+ * 坏行：DSH 的预设列表里看得到它、却选不中，用户感受到的就是「点这个预设没反应」。
+ * 实测受害者是 plan-mode 的 section（2.3 KB 长文本，手抄清单时最容易漏）——
+ * 而插件清单恰恰是要用户粘 JSON 的，所以提示必须出现在粘贴的那一刻。
+ */
+var ED_REQUIRED_PLUGIN_CONFIG = {
+  '@deepseek-ai/dsh-plan-mode': { key: 'section' },
+};
+
+/**
+ * 递归检查必需 config。必须递归：这类行常藏在 `cordis:group` 的 config 数组里
+ * （内置清单里 `plan-mode` 就挂在 `planning` 组内），只看顶层会漏掉。
+ * @param {Array} rows - 插件行（或 group 的内嵌条目）。
+ * @param {string} where - 报错前缀，如「插件清单」。
+ * @returns {Array} 面向用户的句子。
+ */
+function EdRequiredConfigIssues(rows, where) {
+  var issues = [];
+  var list = EdArr(rows);
+  for (var i = 0; i < list.length; i += 1) {
+    var row = list[i];
+    if (!row || typeof row !== 'object') continue;
+    var name = EdStr(row.name).trim();
+    var id = EdStr(row.id).trim() || ('第 ' + (i + 1) + ' 行');
+    var rule = ED_REQUIRED_PLUGIN_CONFIG[name];
+    if (rule) {
+      var config = row.config && typeof row.config === 'object' && !Array.isArray(row.config) ? row.config : null;
+      var raw = config ? config[rule.key] : undefined;
+      var empty = raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '');
+      if (empty) {
+        issues.push(where + '里「' + id + '」(' + name + ') 缺少 config.' + rule.key
+          + '；不加它这个预设激活时会失败，在 DSH 里表现为「选中不了」。从能用的预设里补一份，或删掉这一行');
+      }
+    }
+    if (Array.isArray(row.config)) {
+      issues = issues.concat(EdRequiredConfigIssues(row.config, where + '里「' + id + '」内'));
+    }
+  }
+  return issues;
+}
+
 /** 整份插件清单的校验：返回面向用户的句子数组（空数组 = 没问题）。 */
 function EdPluginRowIssues(list) {
   var issues = [];
@@ -4350,7 +4395,7 @@ function EdPluginRowIssues(list) {
     }
     seen[cleaned.row.id] = true;
   }
-  return issues;
+  return issues.concat(EdRequiredConfigIssues(rows, '插件清单'));
 }
 
 /**

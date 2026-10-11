@@ -683,6 +683,37 @@ dsh 不会把这个失败写进 stderr，只能从 roster 的 `broken` 字段读
 2. **未定义的占位渲染成空串**：`{{ $nope }}` 在 `params` 里没有定义、`values` 里也没有 →
    替换为空串，不报错、也不保留原文。所以发布前请用「正文中未定义参数」警告把占位补全。
 
+### 新建预设时最容易踩的坑：插件清单缺必需字段
+
+**症状**：预设能在 DSH 的列表里看到，**却选不中**（点「启用」没反应）；`dsh` 的 stderr
+**完全干净**，只有 roster 的 `broken` 字段里写着原因。
+
+**成因**：Web profile 把整个 agent 平面（`tool-*` / `skill-filesystem` / `plan-mode` /
+`compaction-*` / `agent-instructions` …）整体 disabled，改由**每个预设自己挂载**。
+所以每个预设的 `plugins` 都必须手写一份完整清单 —— 而这份清单是从
+`<dsh>/node_modules/@deepseek-ai/dsh-base/cordis.patch.yml` 里那些行抄出来的，
+**抄漏一个必需 config 就会让整棵预设子树激活失败**。
+
+**实测案例（plan-mode）**：
+```
+plan-mode (@deepseek-ai/dsh-plan-mode): PlanModeConfig needs a non-empty `section`
+```
+`section` 是 2.3 KB 的英文提示词，而且 `plan-mode` 藏在 `planning` 这个
+`cordis:group` 的 `config` **数组内部** —— 只扫顶层根本看不见它。
+
+**现在有两道闸**（都会给出同一句话，直接告诉你缺什么）：
+
+1. **编辑模式**：插件行 JSON 一改就校验（`EdPluginRowIssues` → `EdRequiredConfigIssues`）；
+2. **保存/发布**：host 半 `normalizePlugins` 会拒绝（`validate.js` 的 `REQUIRED_PLUGIN_CONFIG`），
+   防住绕过 UI 直接写 `<root>/presets/<id>.json` 的路径。
+
+**排查这类问题的正确姿势**：不要只看日志（什么都不写）。要么重启后看 DSH 里那个预设
+能不能选中，要么从进程内读 `agentPresets.list()` 的 `broken` 字段。
+
+> 注意校验表目前**只覆盖 `plan-mode`** —— 只登记实测确认过必需的字段，加多了会变成误拦。
+> 所以「清单里别的行有问题」仍可能悄悄失败；新建预设时**最稳的做法是从一个已经能用的
+> 预设整份复制 `plugins`**，而不是凭记忆重写。
+
 > 这一条是用户报「参数修改之后不能保存」的真正来源：`/preset/values` 一直是正常的
 > （写 `<root>/values/<id>.json`，重启后仍在），但**它单独存在时对 agent 没有任何影响** ——
 > AI 读的是发布那一刻烘死的文本。所以判定「参数保存有没有生效」时，看的是

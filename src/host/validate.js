@@ -202,6 +202,53 @@ const PLUGIN_ROW_KEYS = ['id', 'name', 'config', 'disabled', 'inject', 'intercep
 const MAX_PLUGIN_ROWS = 128;
 
 /**
+ * 几个内置插件的「必需 config」检查表 —— 把沉默的坏行前移到发布时的报错。
+ *
+ * 为什么需要：preset 的 plugins 是用户手写的，而 Web profile 把整个 agent 平面
+ * （tool-* / skill-filesystem / plan-mode / compaction-* …）交给每个预设自己挂载。
+ * 抄这份清单时漏掉一个必需字段，**保存和发布都不会报错**，只会在 profile boot 时
+ * 让 `preset-<id>` 变成坏行：DSH 的预设列表里看得到它、却选不中，用户感受到的就是
+ * 「点这个预设没反应」。而 dsh 不把这个失败写进 stderr，只能从 roster 的 broken 读。
+ *
+ * 实测受害者是 plan-mode 的 `section`（2.3 KB 长文本，最容易抄漏）：
+ * `plan-mode (@deepseek-ai/dsh-plan-mode): PlanModeConfig needs a non-empty \`section\``。
+ * 与其让用户去猜，不如在这里给一句能直接照做的话。
+ */
+const REQUIRED_PLUGIN_CONFIG = {
+  '@deepseek-ai/dsh-plan-mode': { key: 'section' },
+};
+
+/**
+ * 递归校验必需 config —— 必须递归，因为这类行常常藏在 `cordis:group` 的 config
+ * 数组里（`planning` 组里的 `plan-mode` 就是这样），而 group 行的 config 是原样
+ * 保留、不走下面逐字段规范化的。
+ * @param {Array} rows - 原始 plugin 行（或 group 的内嵌条目）。
+ * @param {string} where - 报错时用来定位的路径。
+ */
+function assertRequiredConfigs(rows, where) {
+  if (!Array.isArray(rows)) return;
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    if (!row || typeof row !== 'object') continue;
+    const id = text(row.id).trim() || `#${i}`;
+    const rule = REQUIRED_PLUGIN_CONFIG[text(row.name).trim()];
+    if (rule) {
+      const config = isPlainObject(row.config) ? row.config : null;
+      const raw = config ? config[rule.key] : undefined;
+      const empty = raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '');
+      if (empty) {
+        throw badRequest(
+          `${where} 里第 ${i} 行（id: ${id}，${text(row.name).trim()}）缺少 config.${rule.key}；`
+          + `不加它这个预设激活时会失败，在 DSH 里表现为「选中不了」。`
+          + `从内置清单里补一份，或直接删掉这一行。`
+        );
+      }
+    }
+    if (Array.isArray(row.config)) assertRequiredConfigs(row.config, `${where} > ${id}`);
+  }
+}
+
+/**
  * 预设自带的 Cordis 插件行（§2.1 plugins，可选）。
  *
  * 为什么需要它：Web profile 的 @deepseek-ai/dsh-web-app/cordis.patch.yml 把整个
@@ -223,6 +270,7 @@ export function normalizePlugins(value) {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw badRequest('plugins 必须是数组');
   if (value.length > MAX_PLUGIN_ROWS) throw badRequest(`plugins 最多 ${MAX_PLUGIN_ROWS} 行`);
+  assertRequiredConfigs(value, 'plugins');
   const out = [];
   const seen = new Set();
   for (let i = 0; i < value.length; i += 1) {

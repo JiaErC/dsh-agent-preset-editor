@@ -88,7 +88,7 @@ if (!raw.includes(ANCHOR)) {
 }
 const src = raw.replace(
   ANCHOR,
-  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice };\n  ' + ANCHOR,
+  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice, EdPluginRowIssues };\n  ' + ANCHOR,
 )
 
 console.log('# 0. the bundle materializes with only the platform table')
@@ -706,6 +706,31 @@ console.log('\n# 14. ParamsMode: edit a value, then save')
     check('未发布预设：保存不会去动 DSH 声明',
       !calls.some((c) => c.url.includes('/preset/apply')), JSON.stringify(calls.map((c) => c.url)))
   }
+}
+
+/* -------- 插件清单的必需 config 校验（粘贴时就要报） ------------------ */
+
+console.log('\n# 15. plugin list: missing required config is caught while editing')
+{
+  // 用户实测踩到的那一条：手抄内置清单时漏掉 plan-mode 的 config.section，
+  // 保存与发布都不报错，只在 profile boot 后让 preset-<id> 变成坏行 ——
+  // DSH 里看得到、却选不中。这里锁住「编辑时就能看到」这条防线。
+  const group = (inner) => ({ id: 'planning', name: 'cordis:group', group: true, isolate: { planMode: true }, config: inner })
+  const planMode = (config) => (config === undefined
+    ? { id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode' }
+    : { id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode', config })
+  const says = (list) => APE.EdPluginRowIssues(list).join(' | ')
+
+  check('顶层缺 section 时给出提示', says([planMode()]).includes('section'), says([planMode()]).slice(0, 90))
+  check('提示说明后果是在 DSH 里选不中', says([planMode()]).includes('选中不了'))
+  check('藏在 cordis:group 里的也能查出来', says([group([planMode()])]).includes('section'),
+    says([group([planMode()])]).slice(0, 110))
+  check('空串与纯空白同样算缺失',
+    says([planMode({ section: '' })]).includes('section') && says([planMode({ section: '  ' })]).includes('section'))
+  check('带 section 的正常通过', APE.EdPluginRowIssues([group([planMode({ section: 'You are in plan mode.' })])]).length === 0)
+  check('无关插件不受影响', APE.EdPluginRowIssues([{ id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' }]).length === 0)
+  check('原有校验（缺 id / 重复 id）没有被替代', APE.EdPluginRowIssues([{ name: 'x' }]).length === 1
+    && APE.EdPluginRowIssues([{ id: 'a', name: 'x' }, { id: 'a', name: 'y' }]).length === 1)
 }
 
 console.log('')

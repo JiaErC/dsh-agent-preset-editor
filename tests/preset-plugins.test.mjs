@@ -162,4 +162,47 @@ check('没有引用 Skill 时不生成 skill-filesystem 行', () => {
   assert.ok(!row.config.plugins.some((item) => item.name === '@deepseek-ai/dsh-skill-filesystem'));
 });
 
+/* 5. 必需 config 校验（plan-mode 的 section）-------------------------------- */
+// 用户实测踩到的坑：手抄内置插件清单时漏掉 plan-mode 的 config.section，
+// 保存与发布都不报错，只在 profile boot 时让 preset-<id> 变成坏行 ——
+// DSH 里看得到这个预设却选不中。所以校验必须前移到 normalizePlugins。
+check('缺 section 的 plan-mode 被拒绝（顶层）', () => {
+  assert.throws(
+    () => normalizePlugins([{ id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode' }]),
+    /section/,
+  );
+});
+
+check('缺 section 的 plan-mode 被拒绝（藏在 cordis:group 的 config 里）', () => {
+  assert.throws(() => normalizePlugins([{
+    id: 'planning',
+    name: 'cordis:group',
+    group: true,
+    isolate: { planMode: true },
+    config: [{ id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode' }],
+  }]), /section/);
+});
+
+check('section 为空串或纯空白同样被拒绝', () => {
+  for (const bad of ['', '   ']) {
+    assert.throws(
+      () => normalizePlugins([{ id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode', config: { section: bad } }]),
+      /section/,
+    );
+  }
+});
+
+check('带 section 的 plan-mode 正常通过，无关插件不受影响', () => {
+  const withSection = normalizePlugins([{
+    id: 'planning',
+    name: 'cordis:group',
+    group: true,
+    isolate: { planMode: true },
+    config: [{ id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode', config: { section: 'You are in plan mode.' } }],
+  }]);
+  assert.equal(withSection.length, 1);
+  assert.equal(normalizePlugins([{ id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' }]).length, 1);
+  assert.deepEqual(normalizePlugins(undefined), []);
+});
+
 console.log(`\n${process.exitCode ? '失败' : '通过'}：${passed} 项`);
