@@ -89,6 +89,15 @@ const Api = {
 
   /** @returns {Promise<object>} the stored definitions, catalogues and values. */
   state() { return apiRequest('GET', '/state'); },
+  /**
+   * 「预设该带的插件行」——从 dsh 自带的 bundle patch 就地提取。
+   *
+   * 返回 `{ok, rows, source, reason}`：`ok` 为假时 **不抛错**，而是把 `reason`
+   * 交给调用方显示。这是环境差异（非 npm 布局等）而非故障，弹一个没有出路的错误
+   * 不如直接告诉用户可以手填。
+   * @returns {Promise<object>} the template or a reason why it is unavailable.
+   */
+  pluginTemplate() { return apiRequest('GET', '/plugin-template'); },
   /** @param {object} definition - the preset to store. */
   savePreset(definition) { return apiRequest('POST', '/preset/save', definition); },
   /** @param {string} id - the preset to remove. */

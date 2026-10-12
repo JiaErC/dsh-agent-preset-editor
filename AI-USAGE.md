@@ -710,9 +710,46 @@ plan-mode (@deepseek-ai/dsh-plan-mode): PlanModeConfig needs a non-empty `sectio
 **排查这类问题的正确姿势**：不要只看日志（什么都不写）。要么重启后看 DSH 里那个预设
 能不能选中，要么从进程内读 `agentPresets.list()` 的 `broken` 字段。
 
-> 注意校验表目前**只覆盖 `plan-mode`** —— 只登记实测确认过必需的字段，加多了会变成误拦。
-> 所以「清单里别的行有问题」仍可能悄悄失败；新建预设时**最稳的做法是从一个已经能用的
-> 预设整份复制 `plugins`**，而不是凭记忆重写。
+**不过更好的做法是根本不手写这份清单** —— 见下一节。
+
+### 别手抄插件清单：`GET /plugin-template`
+
+`Web profile` 把 agent 平面交给每个预设自己挂载，所以每个新预设都要带一份完整插件清单。
+**这份清单是 dsh 自带的，不需要谁去抄**：
+
+```
+GET /agent-preset-editor/api/plugin-template
+→ { ok: true, rows: [ …24 行… ], source: { root, basePath, webPath, expected, missing } }
+```
+
+`rows` 可以直接原样放进预设的 `plugins`。它从 dsh 自带的两个 bundle patch 就地提取：
+
+- `dsh-web-app/cordis.patch.yml` 决定**哪些行属于 agent 平面** —— 它把这份平面整体
+  `disabled: true`，那份停用名单就是权威的挑选依据；
+- `dsh-base/cordis.patch.yml` 提供**行本身的内容**（id / name / config）。
+
+**刻意不继承 web-app 的 `disabled`**：那些 `disabled: true` 是「web 平面不装它」的意思，
+而预设要的恰恰是**装上**；base 里自带的禁用（例如 `tool-bash` 在 Windows 上的 `!!js`
+平台判断）才是该保留的。
+
+两个文件都可能把行裹在 `insert:` 块或 `cordis:group` 的 config 数组里，所以要递归拍平
+（`flattenRows`）—— 少降一层，提取结果就是空的。
+
+读不到时**不报 500**，而是返回 `ok: false` + `reason`（这是环境差异，不是故障）：
+
+```
+{ ok: false, rows: [], reason: '找不到 dsh 自带的 bundle patch…；如果你的 dsh 不是 npm 全局安装，请手动填写插件清单' }
+```
+
+**两个入口都用它**：
+
+- 编辑模式 →「挂载插件（原始 Cordis 行）」→ **「填入内置工具面」** 按钮（一键覆盖当前清单）；
+- **「让 AI 帮我写」的预设提示词**已经带上这个地址，AI 会先取清单再建预设 ——
+  地址由 `composeApiUrl()` 从 `Api.base` 拼出，路由前缀变了提示词会自动跟着变。
+
+> 校验表目前**只覆盖 `plan-mode`** —— 只登记实测确认过必需的字段，加多了会变成误拦。
+> 所以「清单里别的行有问题」仍可能悄悄失败；**用 `/plugin-template` 取现成的清单，
+> 才是唯一能覆盖「未知必需字段」的做法**。
 
 > 这一条是用户报「参数修改之后不能保存」的真正来源：`/preset/values` 一直是正常的
 > （写 `<root>/values/<id>.json`，重启后仍在），但**它单独存在时对 agent 没有任何影响** ——

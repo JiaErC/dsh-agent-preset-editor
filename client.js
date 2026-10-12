@@ -1339,6 +1339,15 @@ const Api = {
 
   /** @returns {Promise<object>} the stored definitions, catalogues and values. */
   state() { return apiRequest('GET', '/state'); },
+  /**
+   * 「预设该带的插件行」——从 dsh 自带的 bundle patch 就地提取。
+   *
+   * 返回 `{ok, rows, source, reason}`：`ok` 为假时 **不抛错**，而是把 `reason`
+   * 交给调用方显示。这是环境差异（非 npm 布局等）而非故障，弹一个没有出路的错误
+   * 不如直接告诉用户可以手填。
+   * @returns {Promise<object>} the template or a reason why it is unavailable.
+   */
+  pluginTemplate() { return apiRequest('GET', '/plugin-template'); },
   /** @param {object} definition - the preset to store. */
   savePreset(definition) { return apiRequest('POST', '/preset/save', definition); },
   /** @param {string} id - the preset to remove. */
@@ -5229,6 +5238,34 @@ function EdPluginsSection(props) {
     if (cleaned.ok) ids.push(cleaned.row.id);
   }
 
+  var fillPair = useState(false);
+  var templateBusy = fillPair[0];
+  var setTemplateBusy = fillPair[1];
+
+  /**
+   * 一键填入 dsh 自带的那份 agent 平面插件清单。
+   *
+   * 为什么要有这个按钮：这份清单此前只能靠人从别处手抄，而抄漏一行就会让预设**静默**
+   * 激活失败（DSH 里看得到、选不中，stderr 什么都不写）—— 典型受害者是 plan-mode 的
+   * 2.3 KB `section`，它还藏在 cordis:group 内部，肉眼扫根本看不见。所以别抄了，
+   * 直接从 dsh 自带的 bundle patch 读，谁都抄不错。
+   */
+  function fillFromTemplate() {
+    if (templateBusy) return;
+    LstRun(setTemplateBusy, props.toast, '读取内置插件清单', function () {
+      return Api.pluginTemplate().then(function (data) {
+        if (!data || data.ok !== true) {
+          var why = data && data.reason ? data.reason : '未知原因';
+          if (props.toast) props.toast.show('没能读到内置插件清单：' + why + '（请手动填写）', 'err');
+          return;
+        }
+        setJsonTouched(false);
+        props.onPlugins(data.rows);
+        if (props.toast) props.toast.show('已填入 ' + data.rows.length + ' 行内置插件（覆盖原有清单）', 'ok');
+      });
+    });
+  }
+
   function applyJson() {
     var parsed;
     try {
@@ -5249,8 +5286,16 @@ function EdPluginsSection(props) {
 
   return h(UiSection, {
     title: '挂载插件（原始 Cordis 行）',
-    actions: h('span', { style: ED_CODE_STYLE },
-      list.length + ' 行' + (ids.length ? '：' + ids.join(' / ') : '')),
+    actions: h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+      h(UiButton, {
+        size: 'sm',
+        icon: 'refresh',
+        disabled: templateBusy,
+        onClick: fillFromTemplate,
+        title: '从 dsh 自带的 bundle patch 读入 agent 平面的完整插件清单（会覆盖当前清单）',
+      }, templateBusy ? '读取中…' : '填入内置工具面'),
+      h('span', { style: ED_CODE_STYLE },
+        list.length + ' 行' + (ids.length ? '：' + ids.join(' / ') : ''))),
   },
     h('div', { style: ED_MUTED_STYLE },
       '这一节写的是这个预设自己要挂载的 Cordis 行（Row）。Web 界面把 agent 平面交给了预设：',
@@ -6189,38 +6234,77 @@ function composeLanguage() {
 const COMPOSE_TEXT = {
   mcp: {
     zh: '给 Agent 预设插件添加以下 MCP：\n'
-      + '<在这里补充它的信息：项目位置 / 启动命令与参数 / 传输方式（stdio、http 或 sse）/ 用途>',
+      + '<在这里补充它的信息：项目位置 / 启动命令与参数 / 传输方式（stdio、http 或 sse）/ 用途>\n\n'
+      + '登记完记得把它挂到需要它的预设上，并「保存并发布到 DSH」—— 只登记不挂载不会生效。',
     en: 'Add the following MCP to the Agent preset plugin:\n'
       + '<fill in the details here — where the project lives, the start command and its arguments, '
-      + 'the transport (stdio, http or sse), and what it is for>',
+      + 'the transport (stdio, http or sse), and what it is for>\n\n'
+      + 'After registering it, mount it on the presets that need it and publish to DSH — '
+      + 'registering alone has no effect.',
   },
   skill: {
     zh: '给 Agent 预设插件添加以下 Skill：\n'
-      + '<在这里补充它的信息：名称 / 用途 / SKILL.md 正文或所在目录>',
+      + '<在这里补充它的信息：名称 / 用途 / SKILL.md 正文或所在目录>\n\n'
+      + '登记完记得把它挂到需要它的预设上，并「保存并发布到 DSH」—— 只登记不挂载不会生效。',
     en: 'Add the following Skill to the Agent preset plugin:\n'
-      + '<fill in the details here — its name, what it is for, and the SKILL.md body or the directory it lives in>',
+      + '<fill in the details here — its name, what it is for, and the SKILL.md body or the directory it lives in>\n\n'
+      + 'After registering it, mount it on the presets that need it and publish to DSH — '
+      + 'registering alone has no effect.',
   },
   // The preset request needs one extra word of care: "Agent preset plugin" and
   // "Agent preset" sit next to each other in the sentence, so the plugin is
   // named with its own display title and set off by quotes. Everything after
   // the colon is the user's to fill in — the agent cannot invent a purpose.
+  //
+  // 第二段是这份提示词的关键：预设有 plugins 字段，而 Web profile 把整个 agent
+  // 平面交给每个预设自己挂载，所以这份清单漏一行就会让预设激活失败 —— 而且是
+  // **静默**失败（DSH 里看得到、选不中，stderr 什么都不写）。让 AI 自己拼这份清单
+  // 等于让它去踩这个坑，所以这里明确要求它先取现成的。
+  // {templateUrl} 由 composeRequestText 换成绝对地址。
   preset: {
     zh: '给「Agent 预设编辑器」新增一个 Agent 预设：\n'
-      + '<说明它的用途：面向什么任务、AI 该扮演什么角色、需要哪些参数 / MCP / Skills>',
+      + '<说明它的用途：面向什么任务、AI 该扮演什么角色、需要哪些参数 / MCP / Skills>\n\n'
+      + '预设的 plugins 字段不要自己写：先 GET {templateUrl} 拿到现成的插件清单，原样放进 plugins。'
+      + '这份清单是必须的，少一行会让预设激活失败、在 DSH 里选不中。',
     en: 'Add a new Agent preset to the Agent Preset Editor:\n'
       + '<describe its purpose — the task it targets, the role the agent should play, '
-      + 'and the parameters, MCP servers or Skills it needs>',
+      + 'and the parameters, MCP servers or Skills it needs>\n\n'
+      + "Do not hand-write the preset's plugins field: GET {templateUrl} first and use the rows it returns "
+      + 'as-is. That list is required — one missing row makes the preset fail to activate, so it cannot be '
+      + 'selected in DSH.',
   },
 };
 
 /**
+ * 插件 API 的绝对地址。
+ *
+ * 提示词要让**执行它的 agent** 自己去取插件清单，而 agent 是在会话里跑命令、发请求的，
+ * 拿不到 client 半用的相对路径，所以这里拼成绝对地址。前缀取自 Api.base —— 路由前缀
+ * 将来变了，提示词会自动跟着变，不会留下一个写死的路径慢慢烂掉。
+ * @param {string} path - 以 / 开头的 API 子路径。
+ * @returns {string} 绝对地址；非浏览器环境（测试 / SSR）退回相对路径。
+ */
+function composeApiUrl(path) {
+  var origin = '';
+  try {
+    if (typeof location !== 'undefined' && location && typeof location.origin === 'string') {
+      origin = location.origin;
+    }
+  } catch (error) {
+    origin = '';
+  }
+  return origin + Api.base + path;
+}
+
+/**
  * The request text for one catalogue in the current interface language.
- * @param {'mcp'|'skill'} kind - which catalogue the button belongs to.
+ * @param {'mcp'|'skill'|'preset'} kind - which catalogue the button belongs to.
  * @returns {string} the text to place in the composer.
  */
 function composeRequestText(kind) {
   var entry = COMPOSE_TEXT[kind] || COMPOSE_TEXT.mcp;
-  return entry[composeLanguage()] || entry.zh;
+  var text = entry[composeLanguage()] || entry.zh;
+  return text.split('{templateUrl}').join(composeApiUrl('/plugin-template'));
 }
 
 /* ---------------------------------------------------------------- *

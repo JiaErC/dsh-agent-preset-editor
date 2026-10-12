@@ -1273,6 +1273,34 @@ function EdPluginsSection(props) {
     if (cleaned.ok) ids.push(cleaned.row.id);
   }
 
+  var fillPair = useState(false);
+  var templateBusy = fillPair[0];
+  var setTemplateBusy = fillPair[1];
+
+  /**
+   * 一键填入 dsh 自带的那份 agent 平面插件清单。
+   *
+   * 为什么要有这个按钮：这份清单此前只能靠人从别处手抄，而抄漏一行就会让预设**静默**
+   * 激活失败（DSH 里看得到、选不中，stderr 什么都不写）—— 典型受害者是 plan-mode 的
+   * 2.3 KB `section`，它还藏在 cordis:group 内部，肉眼扫根本看不见。所以别抄了，
+   * 直接从 dsh 自带的 bundle patch 读，谁都抄不错。
+   */
+  function fillFromTemplate() {
+    if (templateBusy) return;
+    LstRun(setTemplateBusy, props.toast, '读取内置插件清单', function () {
+      return Api.pluginTemplate().then(function (data) {
+        if (!data || data.ok !== true) {
+          var why = data && data.reason ? data.reason : '未知原因';
+          if (props.toast) props.toast.show('没能读到内置插件清单：' + why + '（请手动填写）', 'err');
+          return;
+        }
+        setJsonTouched(false);
+        props.onPlugins(data.rows);
+        if (props.toast) props.toast.show('已填入 ' + data.rows.length + ' 行内置插件（覆盖原有清单）', 'ok');
+      });
+    });
+  }
+
   function applyJson() {
     var parsed;
     try {
@@ -1293,8 +1321,16 @@ function EdPluginsSection(props) {
 
   return h(UiSection, {
     title: '挂载插件（原始 Cordis 行）',
-    actions: h('span', { style: ED_CODE_STYLE },
-      list.length + ' 行' + (ids.length ? '：' + ids.join(' / ') : '')),
+    actions: h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+      h(UiButton, {
+        size: 'sm',
+        icon: 'refresh',
+        disabled: templateBusy,
+        onClick: fillFromTemplate,
+        title: '从 dsh 自带的 bundle patch 读入 agent 平面的完整插件清单（会覆盖当前清单）',
+      }, templateBusy ? '读取中…' : '填入内置工具面'),
+      h('span', { style: ED_CODE_STYLE },
+        list.length + ' 行' + (ids.length ? '：' + ids.join(' / ') : ''))),
   },
     h('div', { style: ED_MUTED_STYLE },
       '这一节写的是这个预设自己要挂载的 Cordis 行（Row）。Web 界面把 agent 平面交给了预设：',

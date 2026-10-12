@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 
 import { normalizePresetDefinition, normalizePlugins, isJsExprMarker } from '../src/host/validate.js';
 import { buildPresetRow, renderPatchDocument, toYaml } from '../src/host/declarations.js';
+import { flattenRows } from '../src/host/plugin-template.js';
 
 let passed = 0;
 const check = (name, fn) => {
@@ -203,6 +204,41 @@ check('带 section 的 plan-mode 正常通过，无关插件不受影响', () =>
   assert.equal(withSection.length, 1);
   assert.equal(normalizePlugins([{ id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' }]).length, 1);
   assert.deepEqual(normalizePlugins(undefined), []);
+});
+
+/* 6. 内置插件清单的提取（拍平）--------------------------------------------- */
+// 「预设该带的插件行」是从 dsh 自带的 bundle patch 里读的，而 patch 会把行裹在
+// `insert:` 块或 cordis:group 的 config 数组里 —— 拍平这一步漏掉一层，提取结果就是
+// 空的（第一版原型正是这么失败的：得到 0 行）。这里锁住拍平本身。
+check('flattenRows 会下降进 insert 块', () => {
+  const rows = flattenRows([
+    { insert: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }] },
+    { id: 'c', name: 'C' },
+  ]);
+  assert.deepEqual(rows.map((r) => r.id), ['a', 'b', 'c']);
+});
+
+check('flattenRows 会下降进 cordis:group 的 config 数组', () => {
+  const rows = flattenRows([
+    { id: 'planning', name: 'cordis:group', group: true, config: [{ id: 'plan-mode', name: 'P' }] },
+  ]);
+  assert.deepEqual(rows.map((r) => r.id), ['plan-mode']);
+});
+
+check('flattenRows 递归到底，并跳过没有 id 的节点', () => {
+  const rows = flattenRows([
+    { insert: [{ id: 'outer', name: 'O', config: [{ insert: [{ id: 'deep', name: 'D' }] }] }] },
+    { name: '没有 id', config: { not: 'an array' } },
+    null,
+    'not an object',
+  ]);
+  assert.deepEqual(rows.map((r) => r.id), ['deep']);
+});
+
+check('flattenRows 对非数组输入返回空数组', () => {
+  assert.deepEqual(flattenRows(undefined), []);
+  assert.deepEqual(flattenRows(null), []);
+  assert.deepEqual(flattenRows({ id: 'x' }), []);
 });
 
 console.log(`\n${process.exitCode ? '失败' : '通过'}：${passed} 项`);

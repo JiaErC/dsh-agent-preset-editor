@@ -284,6 +284,33 @@ check('en preset request is English', /Add a new Agent preset to the Agent Prese
 check('all three requests differ', new Set([zhMcp, zhSkill, zhPreset, enMcp, enSkill, enPreset]).size === 6)
 check('unknown kind falls back to MCP', APE.composeRequestText('nope').includes('MCP'))
 
+// 这一组是这份提示词存在的理由：预设必须自带完整的 Cordis 插件清单（Web profile 把
+// agent 平面交给预设自己挂载），而清单里漏一行会让预设**静默**激活失败 —— DSH 里
+// 看得到、选不中。所以提示词必须把「去哪取现成的清单」说清楚，否则 AI 只能自己拼。
+check('zh preset request points at the plugin template endpoint', /plugin-template/.test(zhPreset), zhPreset.slice(-150))
+check('zh preset request fills the URL in (no placeholder left)', !zhPreset.includes('{templateUrl}'))
+// 绝对地址只在有 origin 时成立 —— 见下面那一组成对断言。
+check('zh preset request says why the list is required', /激活失败/.test(zhPreset) && /选不中/.test(zhPreset))
+check('en preset request points at the template too', /plugin-template/.test(enPreset) && !enPreset.includes('{templateUrl}'))
+check('en preset request says why it is required', /fail to activate/.test(enPreset))
+check('mcp request reminds the user to mount and publish', /挂到/.test(zhMcp) && /发布/.test(zhMcp))
+check('skill request reminds the user to mount and publish', /挂到/.test(zhSkill) && /发布/.test(zhSkill))
+
+// URL 的两种形态：浏览器里必须是绝对地址（执行提示词的 agent 在会话里跑命令，
+// 拿不到 client 半的相对路径）；没有 origin 的环境（本测试就是）退回相对路径，
+// 仍然可用。两条都要成立，否则要么提示词没用、要么测试在自欺。
+check('without a browser origin the URL is still a usable path',
+  /\/agent-preset-editor\/api\/plugin-template/.test(zhPreset), zhPreset.slice(-150))
+{
+  const savedLocation = globalThis.location
+  globalThis.location = { origin: 'http://127.0.0.1:3080' }
+  const withOrigin = APE.composeRequestText('preset')
+  check('with a browser origin the URL is absolute',
+    withOrigin.includes('http://127.0.0.1:3080/agent-preset-editor/api/plugin-template'), withOrigin.slice(-140))
+  check('and the placeholder is gone in that path too', !withOrigin.includes('{templateUrl}'))
+  globalThis.location = savedLocation
+}
+
 /* ------------------------------- splice ------------------------------- */
 
 console.log('\n# 6. splice behaviour (pure)')

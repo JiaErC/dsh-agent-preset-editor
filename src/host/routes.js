@@ -11,6 +11,7 @@
  * ------------------------------------------------------------------ */
 
 import { renderPrompt, resolveProfilePatchFile, syncDeclarations, tryHotApplyLoader } from './declarations.js';
+import { readPluginTemplate } from './plugin-template.js';
 import {
   ApiError,
   badRequest,
@@ -164,6 +165,22 @@ export function createRoutes({ store, ctx, config }) {
         dsh: { roster: [], defaultId: null, sessionPreset: null, sessionPresetLocked: false },
         paths: { root: store.paths.root, declarations: store.paths.declarations, profilePatch },
       };
+    }),
+
+    /**
+     * GET /plugin-template → 「预设该带的插件行」。
+     *
+     * Web profile 把整个 agent 平面交给每个预设自己挂载，所以新预设必须带一份完整
+     * 插件清单；在此之前这份清单只能靠人从别处手抄，抄漏一个必需字段（plan-mode 的
+     * `section`）就会让预设激活失败且不留日志。这个接口把清单变成一次可复现的读取，
+     * 编辑模式的「填入内置工具面」和「让 AI 帮我写」的提示词都靠它。
+     *
+     * 读不到时**不报 500**：这是环境差异（非 npm 布局等），client 要能拿到 reason
+     * 告诉用户「请手动填写」，而不是弹一个没有出路的错误。
+     */
+    'GET /plugin-template': guard(async (payload) => {
+      const force = payload && (payload.refresh === true || payload.refresh === 'true');
+      return readPluginTemplate({ refresh: force === true });
     }),
 
     /** POST /preset/save → 落盘定义；已发布过的顺带刷新声明。 */
