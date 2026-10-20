@@ -735,6 +735,34 @@ GET /agent-preset-editor/api/plugin-template
 两个文件都可能把行裹在 `insert:` 块或 `cordis:group` 的 config 数组里，所以要递归拍平
 （`flattenRows`）—— 少降一层，提取结果就是空的。
 
+**但拍平之后必须重新分组**（`groupServicePlugins`）—— 这一步是「预设能不能被选中」的分水岭：
+
+有四个插件在 `apply` 时各注册一个 Cordis service，而预设的 scope 里**外层已经有一份**
+同名注册。把它们当扁平行挂上去，激活就报：
+
+```
+plan-mode (@deepseek-ai/dsh-plan-mode): service "planMode" has been registered at <PlanModeController>
+compaction-basic (@deepseek-ai/dsh-compaction-basic): service "compaction" has been registered …
+workflow-ptc (@deepseek-ai/dsh-workflow-ptc): service "workflowEngine" has been registered …
+tool-result-pruner (@deepseek-ai/dsh-compaction-tool-result-pruner): service "toolResultPruner" …
+```
+
+四条一起报，整棵预设子树起不来 —— 用户看到的就是**新建对话上方选不了这个预设**。
+解法是 `cordis:group` + `isolate` 让它们在**自己的 realm** 里注册：
+
+| 组 | isolate 键 | 成员 |
+|---|---|---|
+| `planning` | `planMode` | `plan-mode` |
+| `compaction` | `compaction` / `toolResultPruner` | `compaction-basic`、`command-compact`、`tool-result-pruner` |
+| `delegation` | `workflowEngine` | `tool-subagent-control`、`tool-subagent-list-agents`、`tool-subagent`、`workflow-ptc`、`tool-workflow` |
+
+**这张表是从 `dsh web --dump-config` 的实际输出抄的**，因为两个 bundle patch 里 `isolate`
+一处都没有 —— 组结构只出现在**组合后**的配置里。DSH 若新增带 service 的插件，这张表要
+同步更新（漏登记的症状就是上面那四条报错）。
+
+所以 `/plugin-template` 返回的 `rows` 是「14 个工具行 + 3 个 isolate 组」，**直接可用**，
+不要再拍平它。
+
 读不到时**不报 500**，而是返回 `ok: false` + `reason`（这是环境差异，不是故障）：
 
 ```

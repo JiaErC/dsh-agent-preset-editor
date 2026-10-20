@@ -17,6 +17,8 @@ if (!outDir) {
   process.exit(2);
 }
 
+import { standardToolchainPlugins } from './lib/preset-plugin-sets.mjs';
+
 /* ------------------------------- 提示词 ------------------------------- */
 
 const PROMPT = `# 身份
@@ -329,75 +331,12 @@ const RULE = PARAMS.map((param) => {
 });
 
 /* --------------------------- 插件行（plugins） --------------------------- */
-/* 依据一：Web profile 的 @deepseek-ai/dsh-web-app/cordis.patch.yml 第 430-556 行把整个
- * agent 平面在 host 平面 disabled，必须由预设自己挂载。
- * 依据二：@deepseek-ai/dsh-web-app/presets/standard.patch.yml —— 功能完整预设的基准清单。
- * 这里与 standard 的差别：多了 docx MCP / docx 技能（读写 Word 简历），少了 tool-ralph。 */
+/* 一套「能干活的」工具行，定义在 scripts/lib/preset-plugin-sets.mjs 里，与其它预设共用。
+ * 它优先从运行中的编辑器的 /plugin-template 实时读取官方清单（那是从 dsh 的 bundle
+ * patch 就地提取的），拿不到才回退到 scripts/lib/preset-toolchain.json 快照。
+ * 依据：Web profile 把整个 agent 平面在 host 平面 disabled，必须由预设自己挂载。 */
 
-const PLUGINS = [
-  { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
-  // 平台条件必须用 { __jsExpr } 标记表达，发射成 `!!js "..."`；写成普通字符串会被
-  // Loader 的 Boolean('...') 判成 true，该行被静默停用（见 validate.js 的注释）。
-  { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash', disabled: { __jsExpr: "process.platform === 'win32'" } },
-  { id: 'tool-pwsh', name: '@deepseek-ai/dsh-tool-pwsh', disabled: { __jsExpr: "process.platform !== 'win32'" } },
-  { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
-  { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
-  { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
-  { id: 'tool-skill', name: '@deepseek-ai/dsh-tool-skill' },
-  { id: 'command-goal', name: '@deepseek-ai/dsh-command-goal' },
-  { id: 'tool-goal', name: '@deepseek-ai/dsh-tool-goal' },
-  {
-    id: 'planning',
-    name: 'cordis:group',
-    group: true,
-    isolate: { planMode: true },
-    config: [
-      { id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode' },
-    ],
-  },
-  {
-    id: 'compaction',
-    name: 'cordis:group',
-    group: true,
-    isolate: { compaction: true, toolResultPruner: true },
-    config: [
-      { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic' },
-      { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact' },
-      {
-        id: 'tool-result-pruner',
-        name: '@deepseek-ai/dsh-compaction-tool-result-pruner',
-        config: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 },
-      },
-    ],
-  },
-  {
-    id: 'delegation',
-    name: 'cordis:group',
-    group: true,
-    isolate: { workflowEngine: true },
-    config: [
-      { id: 'tool-subagent-control', name: '@deepseek-ai/dsh-tool-subagent-control' },
-      { id: 'tool-subagent-list-agents', name: '@deepseek-ai/dsh-tool-subagent-control/list-agents' },
-      {
-        id: 'tool-subagent',
-        name: '@deepseek-ai/dsh-tool-subagent',
-        config: { provider: 'spawn', toolName: 'subagent', modelSelectionSettings: true, backgroundMode: 'continuable' },
-      },
-      {
-        id: 'tool-subagent-fork',
-        name: '@deepseek-ai/dsh-tool-subagent',
-        config: { provider: 'fork', toolName: 'subagent_fork', backgroundMode: 'continuable' },
-      },
-      { id: 'workflow-ptc', name: '@deepseek-ai/dsh-workflow-ptc', config: { provider: 'spawn' } },
-      { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
-    ],
-  },
-  { id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' },
-  { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },
-  { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: true, searchTimeoutMs: 60000 } },
-  { id: 'present', name: '@deepseek-ai/dsh-tool-present' },
-  { id: 'tool-plugin-manager', name: '@deepseek-ai/dsh-plugin-manager/tools', disabled: true },
-];
+const PLUGINS = await standardToolchainPlugins();
 
 /* ------------------------------- 组装与落盘 ------------------------------- */
 

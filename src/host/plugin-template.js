@@ -93,6 +93,98 @@ function toPluginRow(node) {
   return row;
 }
 
+/**
+ * 「注册 service」的插件 → 它必须被包进哪个 isolate 组。
+ *
+ * 这是本模块最容易搞错、也唯一无法从 bundle patch 直接读到的一块。这些插件在 apply
+ * 时各注册一个 Cordis service，而预设的 scope 里**外层已经有一份**同名注册，于是激活时报：
+ *
+ *   plan-mode (@deepseek-ai/dsh-plan-mode): service "planMode" has been registered at <PlanModeController>
+ *   compaction-basic ...: service "compaction" has been registered ...
+ *   workflow-ptc ...: service "workflowEngine" has been registered ...
+ *   tool-result-pruner ...: service "toolResultPruner" has been registered ...
+ *
+ * 四条一起报，整棵预设子树起不来 —— 用户看到的就是「新建对话上方选不了这个预设」。
+ * 解法是让它们在自己的 realm 里注册：`cordis:group` + `isolate`。组名与 isolate 键
+ * 都照 `dsh web --dump-config` 的实际输出抄，没有自行发明。
+ *
+ * 为什么不能从 bundle patch 读：那两个 patch 里 `isolate` 一处都没有（组结构只出现在
+ * **组合后**的配置里），读不到就只能照实测登记。DSH 若新增带 service 的插件，这张表要
+ * 同步更新 —— 漏登记的症状就是上面那四条报错，很好认。
+ */
+const SERVICE_GROUPS = [
+  {
+    id: 'planning',
+    isolate: { planMode: true },
+    plugins: ['@deepseek-ai/dsh-plan-mode'],
+  },
+  {
+    id: 'compaction',
+    isolate: { compaction: true, toolResultPruner: true },
+    plugins: [
+      '@deepseek-ai/dsh-compaction-basic',
+      '@deepseek-ai/dsh-command-compact',
+      '@deepseek-ai/dsh-compaction-tool-result-pruner',
+    ],
+  },
+  {
+    id: 'delegation',
+    isolate: { workflowEngine: true },
+    plugins: [
+      '@deepseek-ai/dsh-tool-subagent-control',
+      '@deepseek-ai/dsh-tool-subagent-control/list-agents',
+      '@deepseek-ai/dsh-tool-subagent',
+      '@deepseek-ai/dsh-workflow-ptc',
+      '@deepseek-ai/dsh-tool-workflow',
+    ],
+  },
+];
+
+/**
+ * 把扁平的插件行整理成「该挂的形式」：注册 service 的插件收进各自的 isolate 组，
+ * 其余保持原样、顺序不变。
+ *
+ * 为什么必须这么做：service 注册是**按 scope** 的，而预设的 scope 外层已经有一份，
+ * 不隔离就撞名、整个预设激活失败。这一步是「能选中预设」的前提，不是可选修饰。
+ * @param {Array} rows - 扁平的插件行。
+ * @returns {Array} 可直接放进预设 plugins 的行（可能含 cordis:group 组行）。
+ */
+export function groupServicePlugins(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  const owner = new Map();
+  for (const group of SERVICE_GROUPS) {
+    for (const name of group.plugins) owner.set(name, group.id);
+  }
+
+  const out = [];
+  const grouped = new Map(SERVICE_GROUPS.map((g) => [g.id, []]));
+
+  for (const row of rows) {
+    const groupId = owner.get(row && row.name);
+    if (groupId === undefined) out.push(row);
+    else grouped.get(groupId).push(row);
+  }
+
+  // 组追加在末尾：它们只注册 service、不提供工具，放最后不影响工具面，
+  // 也不会把 persona 与工具行挤开。
+  for (const group of SERVICE_GROUPS) {
+    const members = grouped.get(group.id);
+    if (!members || members.length === 0) continue;
+    // 与调用方已有的同名行撞 id 时不覆盖：留给用户自己的结构。
+    if (out.some((row) => row && row.id === group.id)) continue;
+    out.push({
+      id: group.id,
+      name: 'cordis:group',
+      group: true,
+      isolate: { ...group.isolate },
+      config: members,
+    });
+  }
+
+  return out;
+}
+
 /** 缓存：同一进程里模板不会变，重复请求不必反复读盘。 */
 let cache = null;
 
@@ -149,9 +241,12 @@ export function readPluginTemplate(options = {}) {
 
     // 2) 内容来源：base 里这些行的定义（保留 base 自己带的 disabled，例如平台判断）
     const baseRows = flattenRows(Array.isArray(baseDoc) ? baseDoc : [baseDoc]);
-    const rows = baseRows.filter((row) => disabled.has(row.id)).map(toPluginRow);
+    const flat = baseRows.filter((row) => disabled.has(row.id)).map(toPluginRow);
+    // 3) 把注册 service 的插件收进 isolate 组 —— 不做这一步，预设会在激活时报
+    //    「service ... has been registered」，然后整个预设选不中。
+    const rows = groupServicePlugins(flat);
 
-    const missing = [...disabled].filter((id) => !rows.some((row) => row.id === id));
+    const missing = [...disabled].filter((id) => !flat.some((row) => row.id === id));
     return {
       ok: rows.length > 0,
       rows,

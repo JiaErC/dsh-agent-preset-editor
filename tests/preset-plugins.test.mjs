@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 
 import { normalizePresetDefinition, normalizePlugins, isJsExprMarker } from '../src/host/validate.js';
 import { buildPresetRow, renderPatchDocument, toYaml } from '../src/host/declarations.js';
-import { flattenRows } from '../src/host/plugin-template.js';
+import { flattenRows, groupServicePlugins } from '../src/host/plugin-template.js';
 
 let passed = 0;
 const check = (name, fn) => {
@@ -239,6 +239,65 @@ check('flattenRows 对非数组输入返回空数组', () => {
   assert.deepEqual(flattenRows(undefined), []);
   assert.deepEqual(flattenRows(null), []);
   assert.deepEqual(flattenRows({ id: 'x' }), []);
+});
+
+/* 7. 注册 service 的插件必须被 isolate -------------------------------- */
+// 这一段是线上事故的还原：把 agent 平面拍平后直接当 plugins 用，四个 service 就注册到
+// 共享 scope，激活时报 “service \"planMode\" has been registered …”，整个预设选不中。
+// groupServicePlugins 负责把它们收回 isolate 组 —— 少做这一步，预设就是坏的。
+check('groupServicePlugins 把四个 service 收进三个 isolate 组', () => {
+  const flat = [
+    { id: 'persona', name: '@deepseek-ai/dsh-persona' },
+    { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
+    { id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode' },
+    { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic' },
+    { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact' },
+    { id: 'tool-result-pruner', name: '@deepseek-ai/dsh-compaction-tool-result-pruner' },
+    { id: 'workflow-ptc', name: '@deepseek-ai/dsh-workflow-ptc' },
+    { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
+    { id: 'mcp-docx', name: '@deepseek-ai/dsh-mcp-client' },
+  ];
+  const out = groupServicePlugins(flat);
+  // 非 service 行原样保留且顺序不变
+  assert.deepEqual(out.filter((r) => !r.group).map((r) => r.id), ['persona', 'tool-fs', 'mcp-docx']);
+  const groups = out.filter((r) => r.group === true);
+  assert.deepEqual(groups.map((g) => g.id), ['planning', 'compaction', 'delegation']);
+  // isolate 键必须覆盖对应 service
+  assert.deepEqual(groups[0].isolate, { planMode: true });
+  assert.deepEqual(groups[1].isolate, { compaction: true, toolResultPruner: true });
+  assert.deepEqual(groups[2].isolate, { workflowEngine: true });
+  // 组内成员正确
+  assert.deepEqual(groups[0].config.map((r) => r.id), ['plan-mode']);
+  assert.deepEqual(groups[1].config.map((r) => r.id), ['compaction-basic', 'command-compact', 'tool-result-pruner']);
+  assert.deepEqual(groups[2].config.map((r) => r.id), ['workflow-ptc', 'tool-workflow']);
+});
+
+check('groupServicePlugins 的结果能被 normalizePlugins 接受', () => {
+  const out = groupServicePlugins([
+    { id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode', config: { section: 'x' } },
+  ]);
+  // 组行的 config 是嵌套数组，normalizePlugins 认得；同时必需 config 校验要能钻进去
+  assert.equal(normalizePlugins(out).length, 1);
+});
+
+check('groupServicePlugins 在没有 service 插件时不造空组', () => {
+  const out = groupServicePlugins([{ id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' }]);
+  assert.equal(out.length, 1);
+  assert.ok(!out.some((r) => r.group === true));
+});
+
+check('groupServicePlugins 不覆盖调用方已有的同名组', () => {
+  const out = groupServicePlugins([
+    { id: 'planning', name: 'cordis:group', group: true, isolate: { planMode: true }, config: [] },
+    { id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode' },
+  ]);
+  const planning = out.filter((r) => r.id === 'planning');
+  assert.equal(planning.length, 1, '同名组只能有一个');
+});
+
+check('groupServicePlugins 对空输入返回空数组', () => {
+  assert.deepEqual(groupServicePlugins(undefined), []);
+  assert.deepEqual(groupServicePlugins([]), []);
 });
 
 console.log(`\n${process.exitCode ? '失败' : '通过'}：${passed} 项`);
