@@ -113,6 +113,12 @@ const APE_CSS = `
 .ape-badge-ok{background:var(--dsw-alias-state-success-tertiary);color:var(--dsw-alias-state-success-primary)}
 .ape-badge-warn{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-label)}
 .ape-badge-err{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}
+/* 可点徽标：只加光标与一点按压反馈，底色圆角字号一律沿用上面的 .ape-badge。 */
+.ape-badge-clickable{cursor:pointer}
+.ape-badge-clickable:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}
+/* 浮层：透明接点击层 + 固定定位的卡片。卡片宽度上限 320，调用方按视口收拢左边界。 */
+.ape-popover-catch{position:fixed;inset:0;z-index:1099;background:transparent}
+.ape-popover-card{position:fixed;z-index:1100;box-sizing:border-box;min-width:180px;max-width:320px;max-height:260px;overflow:auto;padding:6px;border:.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-2);box-shadow:0 8px 24px var(--dsw-alias-bg-mask-1)}
 
 /* ---------- 空态 / 加载 ---------- */
 .ape-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:28px 16px;text-align:center;min-width:0}
@@ -792,20 +798,91 @@ function UiSearch(props) {
 }
 
 /* ------------------------------------------------------------------ *
- * UiBadge —— { children, tone?: 'default'|'ok'|'warn'|'err' }
+ * UiBadge —— { children, tone?: 'default'|'ok'|'warn'|'err', onClick? }
+ *
+ * 传了 onClick 就是一个可点的徽标：**外观一个像素都不变**（同一个 ape-badge
+ * class、同一个 tone），只多出 cursor:pointer 与键盘可达性。不传时渲染结果与
+ * 加这个能力之前完全一致，所以老调用点不需要任何改动。
  * ------------------------------------------------------------------ */
 function UiBadge(props) {
   const p = props || {};
   const tone = p.tone === 'ok' || p.tone === 'warn' || p.tone === 'err' ? p.tone : 'default';
   const iconNode = apeIconNode(p.icon, 11);
+  const clickable = typeof p.onClick === 'function';
+  // 只在可点时挂这些属性：span 默认不可聚焦，靠 role + tabIndex 让它可操作，
+  // 同时把点击冒泡掐掉 —— 徽标常嵌在整行可点的列表项里，不拦会让点击变成「打开这一行」。
+  const interactive = clickable
+    ? {
+      role: 'button',
+      tabIndex: 0,
+      onClick: function (event) {
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+        p.onClick(event);
+      },
+      onKeyDown: function (event) {
+        if (!event) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          if (typeof event.stopPropagation === 'function') event.stopPropagation();
+          p.onClick(event);
+        }
+      },
+    }
+    : {};
   return h(Fragment, null,
     apeStyle(),
-    h('span', {
-      className: cx('ape-badge', tone !== 'default' && 'ape-badge-' + tone),
+    h('span', Object.assign({
+      className: cx('ape-badge', tone !== 'default' && 'ape-badge-' + tone, clickable && 'ape-badge-clickable'),
       title: typeof p.title === 'string' ? p.title : undefined,
-    },
+    }, interactive),
     iconNode ? h('span', { className: 'ape-icon' }, iconNode) : null,
     p.children === null || p.children === undefined ? null : h('span', null, p.children)));
+}
+
+/* ------------------------------------------------------------------ *
+ * UiPopover —— { open, anchor?: {top,left}, onClose, children }
+ *
+ * 挂在某个元素旁边的轻量浮层。刻意不是 UiModal：不遮罩、不锁焦点、不占满屏 ——
+ * 这里要的只是「看一眼谁引用了它」，用模态框会打断手上的操作。
+ *
+ * 定位用 position:fixed + 触发元素算出来的坐标（由调用方在点击时测量后传进来），
+ * 这样列表滚动、容器裁剪都不会把浮层切掉。坐标只在打开的那一刻量一次 ——
+ * 浮层会随点击关闭，不需要跟随滚动重排。
+ * ------------------------------------------------------------------ */
+function UiPopover(props) {
+  const p = props || {};
+  if (p.open !== true) return null;
+  const anchor = p.anchor && typeof p.anchor === 'object' ? p.anchor : null;
+  const close = typeof p.onClose === 'function' ? p.onClose : function () {};
+  // 视野边缘的简单收拢：浮层最宽 320，留 12 的边距，避免贴着右边缘被切。
+  const viewport = typeof window !== 'undefined' && window && typeof window.innerWidth === 'number'
+    ? window.innerWidth
+    : 0;
+  const left = anchor ? Math.max(12, Math.min(anchor.left, viewport ? viewport - 332 : anchor.left)) : 12;
+  const top = anchor ? anchor.top : 12;
+  return h(Fragment, null,
+    apeStyle(),
+    // 透明背景层只用来接「点别处关闭」，不是遮罩：它不改变任何视觉。
+    //
+    // **必须 stopPropagation**：这一层虽然 position:fixed 盖住了整屏，但 DOM 上仍是
+    // 触发它的那一行的后代 —— fixed 只改绘制位置，不改冒泡路径。不停住事件的话，
+    // 点它会先关掉浮层、再继续冒泡到列表行的 onClick，于是「关浮层」和「打开这一项的
+    // 编辑弹窗」同时发生。这条是实测反馈出来的，不是理论顾虑。
+    h('span', {
+      className: 'ape-popover-catch',
+      onClick: function (event) {
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+        close(event);
+      },
+    }),
+    h('div', {
+      className: 'ape-popover-card',
+      role: 'dialog',
+      style: { top: top + 'px', left: left + 'px' },
+      onClick: function (event) {
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+      },
+    }, p.children));
 }
 
 /* ------------------------------------------------------------------ *

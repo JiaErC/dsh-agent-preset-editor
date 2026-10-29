@@ -63,6 +63,31 @@ const LST_STYLE = {
   actions: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: '0', flex: '0 0 auto', flexWrap: 'nowrap' },
   toolbarRow: { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', flexWrap: 'wrap' },
   grow: { flex: '1 1 auto', minWidth: '140px' },
+  // 「谁在用它」浮层里的三块内容：空态一句灰字、列表一格、每个预设一条可点的行。
+  popoverEmpty: {
+    padding: '8px 10px',
+    color: 'var(--dsw-alias-label-secondary)',
+    fontSize: '12px',
+    lineHeight: '1.6',
+  },
+  popoverList: { display: 'flex', flexDirection: 'column', gap: '2px' },
+  popoverItem: {
+    display: 'block',
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '6px 10px',
+    border: '0',
+    borderRadius: '6px',
+    background: 'transparent',
+    color: 'var(--dsw-alias-label-primary)',
+    fontFamily: 'inherit',
+    fontSize: '12px',
+    lineHeight: '1.6',
+    textAlign: 'left',
+    cursor: 'pointer',
+    wordBreak: 'break-word',
+    overflowWrap: 'anywhere',
+  },
   note: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', lineHeight: '1.7', padding: '0 2px' },
   stack: { display: 'flex', flexDirection: 'column', gap: '10px' },
   rows: { display: 'flex', flexDirection: 'column', gap: '4px' },
@@ -777,14 +802,65 @@ function LstReferrers(state, key, id) {
   return out;
 }
 
-/** 引用徽标：被 N 个预设引用（title 里列出名字）。 */
+/**
+ * 引用徽标：可点击，弹出「谁在用它」的浮层。
+ *
+ * 外观与改造前逐像素一致（同一个 UiBadge、同一个 tone、同一段文字），只多出三件事：
+ * hover 变手型、点击弹浮层、浮层里每个预设是一条能直接进编辑页的链接。
+ * 这样「这个条目到底被谁用了」不用再翻预设列表去数。
+ *
+ * @param {object} props - `{ refs, kind?: 'mcp'|'skill', setMode? }`
+ *   `kind` 只影响空态的措辞（MCP 说 MCP，Skill 说 Skill）。
+ */
 function LstRefBadge(props) {
   var refs = LstArray(props.refs);
-  if (refs.length === 0) {
-    return h(UiBadge, { tone: 'warn', title: '还没有任何预设引用它，所以它现在不产生任何效果' }, '未被引用');
-  }
+  var kind = props.kind === 'skill' ? 'skill' : 'mcp';
+  var noun = kind === 'skill' ? 'Skill' : 'MCP';
+  // anchor 存触发元素的屏幕坐标；null 表示浮层关着。
+  var anchorPair = useState(null);
+  var anchor = anchorPair[0];
+  var setAnchor = anchorPair[1];
+
   var names = refs.map(function (preset) { return preset.name || preset.id; }).join('、');
-  return h(UiBadge, { tone: 'ok', title: '被这些预设引用：' + names }, '被 ' + refs.length + ' 个预设引用');
+  var noRefs = refs.length === 0;
+
+  function toggle(event) {
+    if (anchor !== null) { setAnchor(null); return; }
+    var node = event && event.currentTarget ? event.currentTarget : null;
+    var rect = node && typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
+    // 量一次就够：浮层在点击后立刻关闭，不需要跟随滚动重排。
+    setAnchor(rect ? { top: rect.bottom + 4, left: rect.left } : { top: 12, left: 12 });
+  }
+
+  function gotoPreset(presetId) {
+    setAnchor(null);
+    if (typeof props.setMode === 'function') props.setMode(MODE_EDIT, { presetId: presetId });
+  }
+
+  return h(Fragment, null,
+    h(UiBadge, {
+      tone: noRefs ? 'warn' : 'ok',
+      title: noRefs
+        ? '还没有任何预设引用它，所以它现在不产生任何效果（点击查看）'
+        : '被这些预设引用：' + names + '（点击查看）',
+      onClick: toggle,
+    }, noRefs ? '未被引用' : ('被 ' + refs.length + ' 个预设引用')),
+    h(UiPopover, {
+      open: anchor !== null,
+      anchor: anchor,
+      onClose: function () { setAnchor(null); },
+    },
+    noRefs
+      ? h('div', { style: LST_STYLE.popoverEmpty }, '暂无 Agent 预设挂载此 ' + noun)
+      : h('div', { style: LST_STYLE.popoverList }, refs.map(function (preset) {
+        return h('button', {
+          key: preset.id,
+          type: 'button',
+          style: LST_STYLE.popoverItem,
+          title: '打开「' + (preset.name || preset.id) + '」的编辑页',
+          onClick: function () { gotoPreset(preset.id); },
+        }, preset.name || preset.id);
+      }))));
 }
 
 /** 一个新的 MCP 目录项（未保存）。 */
@@ -1074,7 +1150,7 @@ function McpListMode(props) {
         subtitle: summary + (entry.description ? ' · ' + entry.description : ''),
         onOpen: function () { setEditing({ entry: entry, isNew: false }); },
         badges: [
-          h('span', { key: 'ref', style: { display: 'inline-flex' } }, h(LstRefBadge, { refs: refs })),
+          h('span', { key: 'ref', style: { display: 'inline-flex' } }, h(LstRefBadge, { refs: refs, kind: 'mcp', setMode: props.setMode })),
           entry.enabled === false
             ? h(UiBadge, { key: 'off', tone: 'warn', title: '停用状态：不会被任何预设挂载' }, '已停用')
             : null,
@@ -1351,7 +1427,7 @@ function SkillListMode(props) {
         subtitle: source + (entry.description ? ' · ' + entry.description : ''),
         onOpen: function () { setEditing({ entry: entry, isNew: false }); },
         badges: [
-          h('span', { key: 'ref', style: { display: 'inline-flex' } }, h(LstRefBadge, { refs: refs })),
+          h('span', { key: 'ref', style: { display: 'inline-flex' } }, h(LstRefBadge, { refs: refs, kind: 'skill', setMode: props.setMode })),
           entry.enabled === false
             ? h(UiBadge, { key: 'off', tone: 'warn', title: '停用状态：不会被任何预设挂载' }, '已停用')
             : null,

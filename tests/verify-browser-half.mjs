@@ -88,7 +88,7 @@ if (!raw.includes(ANCHOR)) {
 }
 const src = raw.replace(
   ANCHOR,
-  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice, EdPluginRowIssues };\n  ' + ANCHOR,
+  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice, EdPluginRowIssues, LstRefBadge, UiPopover, MODE_EDIT };\n  ' + ANCHOR,
 )
 
 console.log('# 0. the bundle materializes with only the platform table')
@@ -758,6 +758,103 @@ console.log('\n# 15. plugin list: missing required config is caught while editin
   check('无关插件不受影响', APE.EdPluginRowIssues([{ id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' }]).length === 0)
   check('原有校验（缺 id / 重复 id）没有被替代', APE.EdPluginRowIssues([{ name: 'x' }]).length === 1
     && APE.EdPluginRowIssues([{ id: 'a', name: 'x' }, { id: 'a', name: 'y' }]).length === 1)
+}
+
+/* -------- 引用徽标：可点 + 浮层 + 跳转编辑页（视觉不变） ---------------- */
+
+console.log('\n# 17. reference badge opens a popover of presets')
+{
+  const collect = (element, predicate) => {
+    const found = []
+    walk(element, (node) => { if (predicate(node)) found.push(node) })
+    return found
+  }
+  const textOf = (node) => {
+    if (node === null || node === undefined) return ''
+    if (Array.isArray(node)) return node.map(textOf).join('')
+    if (typeof node === 'string' || typeof node === 'number') return String(node)
+    if (typeof node === 'object' && Array.isArray(node.children)) return textOf(node.children)
+    return ''
+  }
+  const refs = [{ id: 'p1', name: '预设一' }, { id: 'p2', name: '预设二' }]
+  const modes = []
+  const setMode = (mode, payload) => modes.push({ mode, payload })
+  const anchorEvent = () => ({
+    currentTarget: { getBoundingClientRect: () => ({ top: 100, bottom: 120, left: 50 }) },
+  })
+  const badgesOf = (tree) => collect(tree, (n) => n.type === APE.UiBadge)
+  const popsOf = (tree) => collect(tree, (n) => n.type === APE.UiPopover)
+
+  // —— 外观：文字与色调必须和改造前一致 ——
+  hookStates.length = 0
+  hookCursor = 0
+  const withRefs = APE.LstRefBadge({ refs, kind: 'mcp', setMode })
+  check('有引用时文字仍是「被 N 个预设引用」',
+    textOf(badgesOf(withRefs)[0].children).includes('被 2 个预设引用'), textOf(badgesOf(withRefs)[0].children))
+  check('有引用时仍用原来的 ok 色调', badgesOf(withRefs)[0].props.tone === 'ok')
+  check('徽标本身可点（挂了 onClick）', typeof badgesOf(withRefs)[0].props.onClick === 'function')
+
+  hookStates.length = 0
+  hookCursor = 0
+  const noRefs = APE.LstRefBadge({ refs: [], kind: 'mcp', setMode })
+  check('无引用时文字仍是「未被引用」', textOf(badgesOf(noRefs)[0].children).includes('未被引用'))
+  check('无引用时仍用原来的 warn 色调', badgesOf(noRefs)[0].props.tone === 'warn')
+
+  // —— 交互：点开前关着，点开后锚在徽标下方 ——
+  check('点击前浮层是关的', popsOf(withRefs)[0].props.open === false)
+  badgesOf(withRefs)[0].props.onClick(anchorEvent())
+  hookCursor = 0
+  const opened = APE.LstRefBadge({ refs, kind: 'mcp', setMode })
+  const pop = popsOf(opened)[0]
+  check('点击后浮层打开', pop.props.open === true)
+  check('浮层锚在徽标下方', !!pop.props.anchor && pop.props.anchor.top === 124, JSON.stringify(pop.props.anchor))
+
+  const items = collect(opened, (n) => n.type === 'button')
+  check('浮层里每个被引用的预设各一条', items.length === 2, `found ${items.length}`)
+  check('条目显示的是预设名', textOf(items[0].children) === '预设一', textOf(items[0].children))
+
+  // —— 跳转：点条目进对应预设的编辑页 ——
+  items[1].props.onClick()
+  check('点击预设名跳到编辑页', !!modes[0] && modes[0].mode === APE.MODE_EDIT, JSON.stringify(modes[0]))
+  check('跳转带上正确的 presetId', !!modes[0] && modes[0].payload && modes[0].payload.presetId === 'p2',
+    JSON.stringify(modes[0] && modes[0].payload))
+
+  // —— 空态措辞：MCP 说 MCP，Skill 说 Skill ——
+  badgesOf(noRefs)[0].props.onClick(anchorEvent())
+  hookCursor = 0
+  const emptyMcp = APE.LstRefBadge({ refs: [], kind: 'mcp', setMode })
+  check('空态说明用的是 MCP',
+    textOf(emptyMcp).includes('暂无 Agent 预设挂载此 MCP'), textOf(emptyMcp).slice(-40))
+  check('空态里没有可点的预设条目', collect(emptyMcp, (n) => n.type === 'button').length === 0)
+
+  // 点浮层外必须只关浮层，不能连带触发它所在列表行的 onClick。
+  // catch 层虽然 fixed 盖住整屏，DOM 上仍是那一行的后代，不停冒泡就会「关了浮层、
+  // 同时把这一项的编辑弹窗也打开」—— 这条是实测反馈出来的。
+  {
+    let stopped = false
+    let closed = false
+    hookCursor = 0
+    const rendered = APE.UiPopover({
+      open: true,
+      anchor: { top: 1, left: 1 },
+      onClose: () => { closed = true },
+      children: 'x',
+    })
+    const catches = collect(rendered, (n) => n.props && n.props.className === 'ape-popover-catch')
+    check('浮层有一层接点击的透明背景层', catches.length === 1, 'found ' + catches.length)
+    check('背景层不是遮罩（没有背景色类名）', !String(catches[0].props.className).includes('mask'))
+    catches[0].props.onClick({ stopPropagation: () => { stopped = true } })
+    check('点背景层会停住冒泡（不连带打开列表行的编辑弹窗）', stopped === true)
+    check('点背景层会关闭浮层', closed === true)
+  }
+  hookStates.length = 0
+  hookCursor = 0
+  const skillBadge = APE.LstRefBadge({ refs: [], kind: 'skill', setMode })
+  badgesOf(skillBadge)[0].props.onClick(anchorEvent())
+  hookCursor = 0
+  const emptySkill = APE.LstRefBadge({ refs: [], kind: 'skill', setMode })
+  check('空态说明在 Skills 列表里用的是 Skill',
+    textOf(emptySkill).includes('暂无 Agent 预设挂载此 Skill'), textOf(emptySkill).slice(-40))
 }
 
 console.log('')
