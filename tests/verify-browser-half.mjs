@@ -501,7 +501,7 @@ console.log('\n# 12. list-row layout cannot overlap')
   check('edit-mode rows wrap prose', /wordBreak: 'break-word'[\s\S]{0,40}overflowWrap: 'anywhere'/.test(edit))
   check('edit-mode code identifiers break mid-token', /wordBreak: 'break-all'/.test(edit))
   check('edit-mode rows carry padding', /padding: '10px 8px'/.test(edit))
-  check('edit-mode rows shrink-safe', /padding: '10px 8px',\n\s*minWidth: 0,/.test(edit))
+  check('edit-mode rows shrink-safe', /padding: '10px 8px',\r?\n\s*minWidth: 0,/.test(edit))
   check('edit-mode rows have no fixed height', !/ED_ROW_STYLE[\s\S]{0,200}?height:/.test(edit))
 }
 

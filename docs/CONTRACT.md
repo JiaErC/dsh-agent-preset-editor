@@ -162,6 +162,8 @@ ctx.remote.settings.update(ns, { selectedDefault: id })
   "plugins": [ /* Cordis 行，见 §2.7；可省略 */ ],
   "mcp": ["docx", "excel"],           // 引用 MCP 目录项 id（不影响其它预设）
   "skills": ["design-doc-authoring"], // 引用 Skill 目录项 id
+  "parentId": "design-doc-writer",    // 可选：成为该预设的子预设（只允许一层）
+  "sharedPrompt": "共享背景：{{ $背景 }}", // 可选：给子预设用的「可继承提示词」
   "dsh": {                            // 由 host 派生回填（可选，保存时可忽略）
     "declaredPlugins": [ /* 渲染出的 Cordis 子插件行 */ ]
   },
@@ -169,6 +171,20 @@ ctx.remote.settings.update(ns, { selectedDefault: id })
   "updatedAt": "2026-10-03T00:00:00.000Z"
 }
 ```
+
+**继承（§2.1.1）** —— 子预设 = 带 `parentId` 的预设，**只允许一层**：
+
+- 子预设继承父的 `mcp` / `skills` / `plugins` / `sharedPrompt`；
+- 子预设的 `mcp` / `skills` **只存自己追加的那些**，父的由 host 在渲染时合并
+  （父的在前、按 id 去重）；所以父改了这些，子预设下次渲染**自动跟随**，子预设从不缓存父的内容；
+- `plugins` 同样合并，**父的行优先**（同 id 时子预设覆盖不了父预设挂载的行）；
+- `sharedPrompt` 先**在父自己的上下文里**用父的 `params` 与父的 values 渲染成成品文本，
+  再作为保留值 `parent` 注入子预设的渲染 —— 子预设 prompt 里写 `{{ $parent }}` 取它；
+- 因此 `parent` 是**保留参数名**，`params` 里不允许定义（`RESERVED_PARAM_NAMES`）；
+- 父不存在（断链）时**不报错**：按顶层预设渲染，`resolvePreset` 返回 `missingParent` 供上层提示。
+
+保存时的校验见 `routes.js` 的 `assertParentLink`：拒绝自引用、拒绝不存在的父、
+拒绝把「本身已是子预设」的预设当父。
 
 ### 2.2 McpEntry（MCP 目录项，全局共享、只被引用才影响预设）
 ```jsonc

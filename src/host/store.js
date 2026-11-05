@@ -178,6 +178,15 @@ export function createStore(root) {
       createdAt: previous && typeof previous.createdAt === 'string' ? previous.createdAt : now,
       updatedAt: now,
     };
+    // 父子关系与「可继承提示词」：只在非空时写。空值不落字段，顶层预设的文件形状
+    // 与引入这两个字段之前完全一致 —— 也让「清空父预设」这件事真的能把字段删掉
+    // （否则旧值会一直留在文件里，子预设永远脱离不了父）。
+    if (typeof definition.parentId === 'string' && definition.parentId !== '') {
+      record.parentId = definition.parentId;
+    }
+    if (typeof definition.sharedPrompt === 'string' && definition.sharedPrompt !== '') {
+      record.sharedPrompt = definition.sharedPrompt;
+    }
     writeFileAtomic(presetFile(record.id), jsonText(record));
     return record;
   }

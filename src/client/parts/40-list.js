@@ -476,6 +476,30 @@ function LstPresetRow(props) {
   if (row.isDefault) badges.push(h(UiBadge, { key: 'default', tone: 'default' }, '默认'));
   if (row.broken) badges.push(h(UiBadge, { key: 'broken', tone: 'err', title: row.broken }, '声明损坏'));
 
+  // 父子关系只存在本地定义里（DSH 的 roster 不知道这回事），所以按 id 回查一次。
+  // 断链（父已删）也照样显示，提示里说明「父预设已不存在」，避免用户以为它凭空坏了。
+  var storedDef = null;
+  var presets = LstArray(props.state && props.state.presets);
+  for (var pi = 0; pi < presets.length; pi += 1) {
+    if (presets[pi] && presets[pi].id === row.id) { storedDef = presets[pi]; break; }
+  }
+  var parentId = storedDef && typeof storedDef.parentId === 'string' ? storedDef.parentId : '';
+  var parentName = '';
+  if (parentId) {
+    for (var pj = 0; pj < presets.length; pj += 1) {
+      if (presets[pj] && presets[pj].id === parentId) { parentName = String(presets[pj].name || parentId); break; }
+    }
+  }
+  if (parentId) {
+    badges.push(h(UiBadge, {
+      key: 'child',
+      tone: 'default',
+      title: parentName
+        ? '子预设：继承「' + parentName + '」的 MCP、Skills 与可继承提示词'
+        : '子预设：父预设「' + parentId + '」已不存在，继承不生效',
+    }, parentName ? ('子预设 · ' + parentName) : '子预设（父已删除）'));
+  }
+
   var main = h(
     'div',
     { style: LST_STYLE.rowMain, onClick: function () { props.onOpen(row.id); }, title: '点击进入参数配置模式' },

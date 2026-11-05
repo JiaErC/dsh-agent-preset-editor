@@ -362,6 +362,91 @@ export function ensureSkillFrontmatter(content, entry) {
 }
 
 /**
+ * 把「子预设 + 父预设」解析成一份可直接渲染的扁平定义。
+ *
+ * 继承规则（三条都是使用者确认过的）：
+ *  1. 子预设继承父的 MCP / Skills / plugins / 可继承提示词；
+ *  2. 子预设只能**追加**自己的 MCP 与 Skills —— 父挂载的既不能删也不能改，合并时
+ *     父的在前、按 id 去重，所以即使子预设写了同名引用也只是重复一次而已；
+ *  3. 只允许一层（父预设自己不能再有 parentId）。
+ *
+ * **提示词的合成顺序是这个函数最要紧的一点**：父的 `sharedPrompt` 先在**父自己的
+ * 上下文里**渲染（用父的 params 与父的 values），得到一段成品文本，再作为 `parent`
+ * 这个值注入子预设的渲染。反过来「先注入、后统一渲染」会让父的占位符被子预设的
+ * 参数解释 —— 那是两套完全独立的参数空间，串了就会渲染出莫名其妙的内容。
+ *
+ * 父预设不存在时**不报错**：按顶层预设处理，并在返回值里带上 `missingParent`，
+ * 让调用方决定怎么提示。理由是一条断掉的继承不该把整个发布流程卡死。
+ *
+ * @param {object} definition - 已规范化的 PresetDefinition（可能是子预设）。
+ * @param {object[]} presets - 全部预设定义，用于查父。
+ * @param {object} valuesByPreset - `{ presetId: values }`，父与子都要给。
+ * @returns {{definition: object, values: object, parent: object|null, missingParent: string}}
+ */
+export function resolvePreset(definition, presets, valuesByPreset) {
+  const list = Array.isArray(presets) ? presets : [];
+  const bags = isPlainObject(valuesByPreset) ? valuesByPreset : {};
+  const own = isPlainObject(bags[definition.id]) ? bags[definition.id] : {};
+
+  const parentId = typeof definition.parentId === 'string' ? definition.parentId : '';
+  if (parentId === '') {
+    return { definition, values: own, parent: null, missingParent: '' };
+  }
+
+  const parent = list.find((item) => isPlainObject(item) && item.id === parentId);
+  if (!parent) {
+    return { definition, values: own, parent: null, missingParent: parentId };
+  }
+
+  const parentValues = isPlainObject(bags[parent.id]) ? bags[parent.id] : {};
+
+  // 父的可继承提示词先在自己的上下文里渲染成成品文本。
+  const sharedText = typeof parent.sharedPrompt === 'string' && parent.sharedPrompt !== ''
+    ? renderPrompt(parent.sharedPrompt, parentValues, parent.params)
+    : '';
+
+  const mergeRefs = (inherited, ownRefs) => {
+    const out = [];
+    for (const id of [...(Array.isArray(inherited) ? inherited : []), ...(Array.isArray(ownRefs) ? ownRefs : [])]) {
+      if (typeof id === 'string' && id !== '' && !out.includes(id)) out.push(id);
+    }
+    return out;
+  };
+
+  // plugins 按行 id 去重，且**父的优先** —— 与「不能修改父预设挂载的东西」保持一致。
+  const mergePlugins = (inherited, ownRows) => {
+    const out = [];
+    const seen = new Set();
+    for (const row of [...(Array.isArray(inherited) ? inherited : []), ...(Array.isArray(ownRows) ? ownRows : [])]) {
+      if (!isPlainObject(row)) continue;
+      const key = typeof row.id === 'string' ? row.id : '';
+      if (key !== '') {
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      out.push(row);
+    }
+    return out;
+  };
+
+  const merged = {
+    ...definition,
+    mcp: mergeRefs(parent.mcp, definition.mcp),
+    skills: mergeRefs(parent.skills, definition.skills),
+    plugins: mergePlugins(parent.plugins, definition.plugins),
+  };
+
+  // `parent` 只在这一层注入；它不写进 ParamValues 的落盘文件，所以父预设改了
+  // 可继承提示词，子预设下次渲染立刻跟随，不需要任何同步动作。
+  return {
+    definition: merged,
+    values: sharedText === '' ? own : { ...own, parent: sharedText },
+    parent,
+    missingParent: '',
+  };
+}
+
+/**
  * 渲染一个预设的声明行。
  * @param {object} definition - 已规范化的 PresetDefinition。
  * @param {object} values - 该预设当前的 ParamValues.values。
@@ -631,10 +716,19 @@ export function syncDeclarations(options) {
   const kept = [];
   let skillFiles = 0;
 
+  // 父子合并要看得到全部预设与全部取值，所以在循环外取一次。
+  const allPresets = (store.listPresets().presets || []);
+  const allValues = store.listValues() || {};
+
   for (const id of appliedIds) {
-    const definition = store.readPreset(id);
-    if (!definition) continue; // 定义已被删除：从已发布集合里静默摘掉
-    const values = store.readValues(id) || {};
+    const stored = store.readPreset(id);
+    if (!stored) continue; // 定义已被删除：从已发布集合里静默摘掉
+    const ownValues = store.readValues(id) || {};
+    // 子预设的 MCP / Skills / plugins / 可继承提示词在这里并入 —— 父预设改了，
+    // 下一次 sync 就自动跟随，不需要任何同步动作（子预设从不缓存父的内容）。
+    const resolved = resolvePreset(stored, allPresets, { ...allValues, [id]: ownValues });
+    const definition = resolved.definition;
+    const values = resolved.values;
 
     // inline Skill 需要先把正文写到磁盘，声明行才有目录可指
     const resolvedSkills = [];

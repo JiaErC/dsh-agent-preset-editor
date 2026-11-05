@@ -13,8 +13,8 @@
 
 import assert from 'node:assert/strict';
 
-import { normalizePresetDefinition, normalizePlugins, isJsExprMarker } from '../src/host/validate.js';
-import { buildPresetRow, renderPatchDocument, toYaml } from '../src/host/declarations.js';
+import { normalizePresetDefinition, normalizePlugins, isJsExprMarker, RESERVED_PARAM_NAMES } from '../src/host/validate.js';
+import { buildPresetRow, renderPatchDocument, toYaml, resolvePreset } from '../src/host/declarations.js';
 import { flattenRows, groupServicePlugins } from '../src/host/plugin-template.js';
 
 let passed = 0;
@@ -299,5 +299,77 @@ check('groupServicePlugins 对空输入返回空数组', () => {
   assert.deepEqual(groupServicePlugins(undefined), []);
   assert.deepEqual(groupServicePlugins([]), []);
 });
+
+/* 8. 子预设：继承 MCP / Skills / plugins 与「可继承提示词」------------------- */
+// 继承是**运行时合并**，子预设从不缓存父的内容 —— 这样父改了这些，子预设的声明
+// 下次渲染就自动跟随，不需要任何同步动作。下面几条把合并规则与那个「先渲染再注入」
+// 的顺序都钉住。
+{
+  const parent = {
+    id: 'p1', name: '父', prompt: '父自己的提示词',
+    sharedPrompt: '共享段：{{ $tone }}',
+    params: [{ name: 'tone', type: 'text', default: '正式' }],
+    mcp: ['docx', 'excel'], skills: ['docx-skill'],
+    plugins: [{ id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' }],
+  }
+  const child = {
+    id: 'c1', parentId: 'p1', name: '子',
+    prompt: '子。继承：{{ $parent }}。自有：{{ $mine }}',
+    params: [{ name: 'mine', type: 'text', default: 'X' }],
+    mcp: ['excel', 'playwright'], skills: ['my-skill'],
+    plugins: [{ id: 'tool-fs', name: 'CHILD-OVERRIDE' }, { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web' }],
+  }
+  const bags = { p1: { tone: '轻松' }, c1: { mine: 'Y' } }
+  const r = resolvePreset(child, [parent, child], bags)
+
+  check('父的 MCP 在前，子的追加，重复的被去掉',
+    () => assert.deepEqual(r.definition.mcp, ['docx', 'excel', 'playwright']))
+  check('Skills 同样合并',
+    () => assert.deepEqual(r.definition.skills, ['docx-skill', 'my-skill']))
+  check('plugins 按 id 去重且父的优先（子不能覆盖父挂载的）',
+    () => assert.equal(r.definition.plugins[0].name, '@deepseek-ai/dsh-tool-fs'))
+  check('子里独有的 plugin 行仍然保留',
+    () => assert.ok(r.definition.plugins.some((p) => p.id === 'tool-web')))
+
+  check('父的 sharedPrompt 用父自己的参数渲染后注入为 $parent',
+    () => assert.equal(r.values.parent, '共享段：轻松'))
+  check('子自己的取值不受影响', () => assert.equal(r.values.mine, 'Y'))
+
+  const row = buildPresetRow(r.definition, r.values, { mcp: [], skills: [] }, {})
+  check('最终提示词含渲染后的父文本', () => assert.ok(row.config.plugins[0].config.prefix.includes('共享段：轻松')))
+  check('最终提示词不含未替换的 $parent 占位',
+    () => assert.ok(!row.config.plugins[0].config.prefix.includes('{{ $parent }}')))
+
+  const orphan = resolvePreset(child, [child], bags)
+  check('父不存在时不抛错，退回顶层并报告 missingParent', () => {
+    assert.equal(orphan.parent, null)
+    assert.equal(orphan.missingParent, 'p1')
+  })
+  check('断链时不会凭空注入 parent 值', () => assert.equal(orphan.values.parent, undefined))
+
+  const noShared = resolvePreset(child, [{ ...parent, sharedPrompt: undefined }, child], bags)
+  check('父没写可继承提示词时不注入空串（否则会误以为继承失效）',
+    () => assert.equal(noShared.values.parent, undefined))
+
+  const solo = resolvePreset({ id: 'top', name: '顶层', prompt: 'x', mcp: ['a'], skills: [] }, [], {})
+  check('顶层预设原样返回', () => {
+    assert.equal(solo.parent, null)
+    assert.equal(solo.values.parent, undefined)
+  })
+}
+
+check('parent 是保留参数名，用户不能定义', () => {
+  assert.deepEqual(RESERVED_PARAM_NAMES, ['parent'])
+  assert.throws(() => normalizePresetDefinition({ id: 'x', name: 'x', params: [{ name: 'parent', type: 'text' }] }), /保留字/)
+})
+
+check('parentId / sharedPrompt 空串不落字段，顶层预设形状不变', () => {
+  const top = normalizePresetDefinition({ id: 'x', name: 'x', parentId: '', sharedPrompt: '' })
+  assert.equal(top.parentId, undefined)
+  assert.equal(top.sharedPrompt, undefined)
+  const child = normalizePresetDefinition({ id: 'y', name: 'y', parentId: 'p1', sharedPrompt: '共享' })
+  assert.equal(child.parentId, 'p1')
+  assert.equal(child.sharedPrompt, '共享')
+})
 
 console.log(`\n${process.exitCode ? '失败' : '通过'}：${passed} 项`);

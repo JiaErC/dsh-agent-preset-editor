@@ -651,13 +651,17 @@ function EdDraftFrom(state, presetId) {
     mcp: EdArr(source.mcp).slice(),
     skills: EdArr(source.skills).slice(),
     plugins: EdClone(EdArr(source.plugins)) || [],
+    // 父子关系与「可继承提示词」：留空即顶层预设 / 没有共享段，保存时不会写成
+    // 空字段（host 的归一化器也会把空串摘掉），所以顶层预设的对象形状保持不变。
+    parentId: EdStr(source.parentId),
+    sharedPrompt: EdStr(source.sharedPrompt),
   };
 }
 
 /** The PresetDefinition the host stores (timestamps belong to the host). */
 function EdBuildDefinition(draft) {
   var source = draft || {};
-  return {
+  var payload = {
     id: EdStr(source.id).trim(),
     name: EdStr(source.name).trim(),
     description: EdStr(source.description).trim(),
@@ -671,6 +675,11 @@ function EdBuildDefinition(draft) {
     mcp: EdArr(source.mcp).slice(),
     skills: EdArr(source.skills).slice(),
   };
+  // 空串不写：顶层预设不该多出 parentId/sharedPrompt 两个空字段，host 的归一化器
+  // 也是这么处理的（见 normalizePresetDefinition），两边保持一致。
+  if (EdStr(source.parentId)) payload.parentId = EdStr(source.parentId);
+  if (EdStr(source.sharedPrompt)) payload.sharedPrompt = EdStr(source.sharedPrompt);
+  return payload;
 }
 
 /* -------------------------------- section 1 -------------------------------- */
@@ -746,6 +755,32 @@ function EdBasicsSection(props) {
       value: EdStr(draft.order),
       onChange: props.onOrder,
     })),
+    // 父子关系：选定父之后本预设成为子预设，继承父的 MCP / Skills / 可继承提示词。
+    // 只允许一层 —— 候选里排除了「本身已是子预设」的那些，从源头断掉多层的可能。
+    h(UiField, {
+      label: '父预设',
+      info: '选一个父预设后，本预设成为子预设：继承父的 MCP、Skills 与它对外共享的提示词，自己只能追加。只允许一层继承。',
+    }, h(UiSelect, {
+      value: EdStr(draft.parentId),
+      disabled: props.busy,
+      options: [{ label: '（无 —— 作为顶层预设）', value: '' }].concat(EdArr(props.parentOptions)),
+      onChange: props.onParent,
+    })),
+    EdStr(draft.parentId)
+      ? h('div', { style: ED_NOTICE_STYLE },
+        h('div', null, '这是子预设，父预设是「' + EdStr(props.parentName) + '」。'),
+        h('div', { style: ED_MUTED_STYLE },
+          '父预设挂载的 MCP 与 Skills 在下面只读显示，你只能追加自己的；父预设改了这些或改了可继承提示词，'
+          + '本预设的声明会在下次保存时自动跟随，不需要你手动同步。'))
+      : h(UiField, {
+        label: '可继承提示词',
+        info: '子预设用 {{ $parent }} 取这一段。这里可以用本预设自己的参数；父预设一改，所有引用它的子预设下次渲染就跟着变。',
+      }, h(UiTextarea, {
+        value: EdStr(draft.sharedPrompt),
+        rows: 4,
+        placeholder: '例如：\n共享背景：{{ $背景 }}',
+        onChange: props.onSharedPrompt,
+      })),
     props.overrideNotice
       ? h('div', { style: ED_NOTICE_STYLE },
         h('div', null, '「' + EdStr(draft.id) + '」当前来自 DSH 内置声明。'),
@@ -838,7 +873,14 @@ function EdPromptSection(props) {
     });
     return map;
   }, [params]);
-  var missing = detected.filter(function (name) { return defined.indexOf(name) === -1; });
+  // `parent` 是子预设引用父预设「可继承提示词」的保留占位，由 host 在渲染时注入，
+  // 不需要（也不允许）在 params 里定义。所以子预设里它不算「未定义参数」，否则每个
+  // 子预设都会顶着一个假警告，把真正的漏定义淹掉。顶层预设写 `{{ $parent }}` 是笔误
+  // （它没有父），照常提示。
+  var reserved = props.isChild ? ['parent'] : [];
+  var missing = detected.filter(function (name) {
+    return reserved.indexOf(name) === -1 && defined.indexOf(name) === -1;
+  });
   var unused = defined.filter(function (name) { return detected.indexOf(name) === -1; });
 
   // Restore the caret after an insert re-rendered the textarea.
@@ -1375,6 +1417,9 @@ function EdPluginsSection(props) {
 function EdCatalogPicker(props) {
   var entries = EdArr(props.entries);
   var selected = EdArr(props.selected);
+  // 继承自父预设的条目：只读显示为「已勾选」，且**不写进**本预设的引用列表 ——
+  // 子预设的 mcp / skills 只存自己追加的那些，父的由 host 在渲染时合并。
+  var inherited = EdArr(props.inherited);
   var searchState = useState('');
   var query = searchState[0];
   var setQuery = searchState[1];
@@ -1408,19 +1453,24 @@ function EdCatalogPicker(props) {
     visible.length
       ? h('div', null, visible.map(function (entry) {
         var id = EdStr(entry && entry.id);
-        var checked = selected.indexOf(id) !== -1;
+        var inheritedHere = inherited.indexOf(id) !== -1;
+        // 继承来的显示为已勾选且不可关 —— 父预设挂载的东西子预设不能改；
+        // 自己追加的照常可勾可取消。
+        var checked = inheritedHere || selected.indexOf(id) !== -1;
         var refs = EdReferenceCount(props.state, props.refKey, id);
         return h('div', { key: id, style: ED_ROW_STYLE },
           h(UiSwitch, {
             checked: checked,
+            disabled: inheritedHere,
             onChange: function (value) { props.onToggle(id, value); },
           }),
           h('div', { style: { flex: '1 1 auto', minWidth: 0, maxWidth: '100%', wordBreak: 'break-word', overflowWrap: 'anywhere' } },
             h('div', { style: ED_CHIPROW_STYLE },
               h('span', null, EdStr(entry.name || id)),
               h('code', { style: ED_CODE_STYLE }, id),
+              inheritedHere ? h(UiBadge, { tone: 'ok', title: '由父预设挂载，子预设不能取消' }, '继承自父预设') : null,
               entry && entry.enabled === false ? h(UiBadge, { tone: 'warn' }, '已停用') : null,
-              checked && entry && entry.enabled === false ? h(UiBadge, { tone: 'err' }, '本预设仍会引用') : null
+              !inheritedHere && checked && entry && entry.enabled === false ? h(UiBadge, { tone: 'err' }, '本预设仍会引用') : null
             ),
             entry && entry.description
               ? h('div', { style: ED_MUTED_STYLE }, EdStr(entry.description))
@@ -1481,6 +1531,16 @@ function EditMode(props) {
   var draftState = useState(null);
   var draft = draftState[0];
   var setDraft = draftState[1];
+
+  // 父预设（只有子预设才有）：用来在 MCP / Skills 选择器里只读显示「继承来的那些」，
+  // 以及在基础信息区显示父预设名。它**只影响展示** —— 真正的合并发生在 host 渲染时，
+  // 所以父预设一改，子预设的声明下次保存就跟着变，这里不需要任何同步逻辑。
+  var parentPreset = useMemo(function () {
+    var pid = EdStr(draft && draft.parentId);
+    if (!pid) return null;
+    var hit = EdArr(state && state.presets).filter(function (p) { return p && p.id === pid; })[0];
+    return hit || null;
+  }, [draft, state]);
   var baselineState = useState('');
   var baseline = baselineState[0];
   var setBaseline = baselineState[1];
@@ -1719,16 +1779,32 @@ function EditMode(props) {
       sourceLoading: !!(sourceView && sourceView.loading),
       sourceContent: sourceView ? sourceView.content : '',
       sourceError: sourceView ? sourceView.error : '',
+      // 父预设候选：排除自己，也排除「本身就是子预设」的那些 —— 只允许一层继承，
+      // 从候选列表里断掉，比让用户选完再报错友好。
+      parentOptions: EdArr(state && state.presets)
+        .filter(function (preset) { return preset && preset.id !== draft.id && !EdStr(preset.parentId); })
+        .map(function (preset) {
+          return { label: (preset.name || preset.id) + '（' + preset.id + '）', value: preset.id };
+        }),
+      parentName: (function () {
+        var pid = EdStr(draft.parentId);
+        if (!pid) return '';
+        var hit = EdArr(state && state.presets).filter(function (p) { return p && p.id === pid; })[0];
+        return hit ? (hit.name || hit.id) : pid;
+      })(),
       onId: function (value) { patchDraft({ id: value.trim().toLowerCase() }); },
       onIdFromName: function () { patchDraft({ id: toPresetId(draft.name) }); },
       onName: function (value) { patchDraft({ name: value }); },
       onDescription: function (value) { patchDraft({ description: value }); },
       onOrder: function (value) { patchDraft({ order: value === '' ? 0 : Number(value) }); },
+      onParent: function (value) { patchDraft({ parentId: EdStr(value) }); },
+      onSharedPrompt: function (value) { patchDraft({ sharedPrompt: value }); },
       onReadBuiltin: readBuiltin,
     }),
     h(EdPromptSection, {
       draft: draft,
       toast: toast,
+      isChild: EdStr(draft.parentId) !== '',
       onPrompt: function (value) { patchDraft({ prompt: value }); },
       onParams: function (value) { patchDraft({ params: value }); },
     }),
@@ -1754,6 +1830,7 @@ function EditMode(props) {
       createLabel: '新建 MCP',
       entries: state.mcp,
       selected: draft.mcp,
+      inherited: EdArr(parentPreset && parentPreset.mcp),
       state: state,
       refKey: 'mcp',
       onToggle: function (id, checked) { toggleSelection('mcp', id, checked); },
@@ -1765,6 +1842,7 @@ function EditMode(props) {
       createLabel: '新建 Skill',
       entries: state.skills,
       selected: draft.skills,
+      inherited: EdArr(parentPreset && parentPreset.skills),
       state: state,
       refKey: 'skills',
       onToggle: function (id, checked) { toggleSelection('skills', id, checked); },

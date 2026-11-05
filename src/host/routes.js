@@ -10,7 +10,7 @@
  * 周期，所以每一条路径都必须恰好写一次响应 —— 包括抛错路径。
  * ------------------------------------------------------------------ */
 
-import { renderPrompt, resolveProfilePatchFile, syncDeclarations, tryHotApplyLoader } from './declarations.js';
+import { renderPrompt, resolvePreset, resolveProfilePatchFile, syncDeclarations, tryHotApplyLoader } from './declarations.js';
 import { readPluginTemplate } from './plugin-template.js';
 import {
   ApiError,
@@ -95,6 +95,31 @@ function readJsonBody(req) {
       finish(resolve, parsed);
     });
   });
+}
+
+/**
+ * 校验子预设的父链接。
+ *
+ * 三条规则，都在保存时挡下来：① 不能把自己当父；② 父必须存在；③ **只允许一层** ——
+ * 父自己不能再有 parentId。第三条是刻意的：多层继承会让 MCP/Skills 去重与提示词
+ * 拼接都变成递归操作，而收益很小。数据形状（parentId）本来就够表达链，将来要放开
+ * 不必改结构。
+ *
+ * 断链（父被删）**不在这里报错**：那是渲染期的事，resolvePreset 会退回顶层处理并
+ * 带上 missingParent，让用户还能把预设改回来 —— 一条坏链接不该把编辑界面锁死。
+ * @param {object} definition - 已规范化的预设定义。
+ * @param {object} store - 存取层。
+ */
+function assertParentLink(definition, store) {
+  const parentId = typeof definition.parentId === 'string' ? definition.parentId : '';
+  if (parentId === '') return;
+  if (parentId === definition.id) throw badRequest('预设不能把自己设为父预设');
+  const all = (store.listPresets().presets || []);
+  const parent = all.find((item) => item && item.id === parentId);
+  if (!parent) throw notFound(`父预设「${parentId}」不存在，请先创建它`);
+  if (typeof parent.parentId === 'string' && parent.parentId !== '') {
+    throw badRequest(`「${parentId}」本身已经是子预设；只允许一层继承，它不能再当父预设`);
+  }
 }
 
 /**
@@ -186,8 +211,13 @@ export function createRoutes({ store, ctx, config }) {
     /** POST /preset/save → 落盘定义；已发布过的顺带刷新声明。 */
     'POST /preset/save': guard(async (payload) => {
       const definition = normalizePresetDefinition(payload);
+      assertParentLink(definition, store);
       store.writePreset(definition);
-      if (store.readApplied().includes(definition.id)) syncQuietly('预设已更新');
+      // 保存任何预设后都重渲染一次，而不是只在「保存的恰好是已发布预设」时：
+      // 父预设改 MCP / Skills / 可继承提示词后，已发布的**子预设**必须跟着变，
+      // 而那一次保存的父预设自己可能根本没发布过。syncDeclarations 只在受管区块
+      // 真有变化时才写盘，所以这里多调一次不会产生噪音。
+      syncQuietly('预设已更新');
       return { id: definition.id };
     }),
 
@@ -287,10 +317,21 @@ export function createRoutes({ store, ctx, config }) {
     /** POST /prompt/preview → 与 client 半完全一致的占位渲染（§2.5）。 */
     'POST /prompt/preview': guard(async (payload) => {
       const id = requireId(payload, 'id', '预设 id');
-      const definition = store.readPreset(id);
-      if (!definition) throw notFound(`没有找到预设「${id}」`);
-      const values = payload.values === undefined ? store.readValues(id) || {} : normalizeValues(payload.values);
-      return { prompt: renderPrompt(definition.prompt, values, definition.params) };
+      const stored = store.readPreset(id);
+      if (!stored) throw notFound(`没有找到预设「${id}」`);
+      // 预览也必须走父子合并：子预设的 `{{ $parent }}` 只有在合并之后才有值，
+      // 否则预览会比真机少一整段，反而误导人。
+      const allPresets = store.listPresets().presets || [];
+      const allValues = store.listValues() || {};
+      const ownValues = payload.values === undefined
+        ? (store.readValues(id) || {})
+        : normalizeValues(payload.values);
+      const resolved = resolvePreset(stored, allPresets, { ...allValues, [id]: ownValues });
+      return {
+        prompt: renderPrompt(resolved.definition.prompt, resolved.values, resolved.definition.params),
+        parentId: resolved.parent ? resolved.parent.id : '',
+        missingParent: resolved.missingParent,
+      };
     }),
   };
 

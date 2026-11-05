@@ -168,6 +168,10 @@ export function normalizeParams(value) {
   for (let i = 0; i < value.length; i += 1) {
     const param = normalizeParam(value[i], i);
     if (seen.has(param.name)) throw badRequest(`参数名 "${param.name}" 重复`);
+    // `parent` 留给「父预设的可继承提示词」—— 见 RESERVED_PARAM_NAMES 的说明。
+    if (RESERVED_PARAM_NAMES.includes(param.name)) {
+      throw badRequest(`参数名 "${param.name}" 是保留字（子预设用它引用父预设的可继承提示词），请换一个名字`);
+    }
     seen.add(param.name);
     out.push(param);
   }
@@ -372,6 +376,15 @@ export function normalizeValues(value) {
 
 /* ------------------------------ 三种实体 ------------------------------ */
 
+/**
+ * 子预设不能拿来当参数名的保留字。
+ *
+ * `parent` 是子预设引用父预设「可继承提示词」的占位名（写 `{{ $parent }}`）。
+ * 它由渲染层注入，不来自 ParamValues；如果允许用户定义同名参数，两者会抢同一个
+ * 占位符 —— 到底取用户填的值还是父预设的文本将变得无法解释。所以直接不允许。
+ */
+export const RESERVED_PARAM_NAMES = ['parent'];
+
 /** §2.1 PresetDefinition。时间戳由 store 负责，这里不管。
  *  plugins 是可选字段：没有这个键时**不写进返回值**，store 层据此区分
  *  「本次保存没带插件清单」与「用户确实清空了插件清单」，避免旧版编辑界面
@@ -391,6 +404,14 @@ export function normalizePresetDefinition(payload) {
     skills: normalizeRefs(raw.skills),
   };
   if (raw.plugins !== undefined) definition.plugins = normalizePlugins(raw.plugins);
+  // 子预设：指向父预设。只允许一层，环与自引用由 routes 层在保存时校验（那里才知道
+  // 全部预设）。空串等同「没有父」，不留字段 —— 顶层预设的对象形状保持不变。
+  if (raw.parentId !== undefined && raw.parentId !== null && String(raw.parentId).trim() !== '') {
+    definition.parentId = normalizeId(raw.parentId, '父预设 id');
+  }
+  // 父预设的「可继承提示词」：子预设用 `{{ $parent }}` 取它。空串不留字段。
+  const sharedPrompt = text(raw.sharedPrompt);
+  if (sharedPrompt !== '') definition.sharedPrompt = sharedPrompt;
   return definition;
 }
 
