@@ -88,7 +88,7 @@ if (!raw.includes(ANCHOR)) {
 }
 const src = raw.replace(
   ANCHOR,
-  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice, EdPluginRowIssues, LstRefBadge, UiPopover, MODE_EDIT };\n  ' + ANCHOR,
+  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice, EdPluginRowIssues, LstRefBadge, UiPopover, MODE_EDIT, loadEditorState, LstEnablePreset, remoteValue, LstPresetRows };\n  ' + ANCHOR,
 )
 
 console.log('# 0. the bundle materializes with only the platform table')
@@ -855,6 +855,136 @@ console.log('\n# 17. reference badge opens a popover of presets')
   const emptySkill = APE.LstRefBadge({ refs: [], kind: 'skill', setMode })
   check('空态说明在 Skills 列表里用的是 Skill',
     textOf(emptySkill).includes('暂无 Agent 预设挂载此 Skill'), textOf(emptySkill).slice(-40))
+}
+
+/* -------- DSH Remote 调用：{ok,value} 信封（真机加载失败的根因） --------- */
+
+console.log('\n# 18. DSH Remote results are unwrapped (RemoteResult envelope)')
+{
+  // 真机事故：ctx.remote.agentPresets.list() 返回的是 RemoteResult 信封
+  // `{ ok: true, value: { presets } }`，而不是 roster 本身。插件直接读
+  // `.presets` 永远是 undefined，于是侧边栏的 DSH 内置预设整块消失，而且
+  // 不报错。下面把两件事一起钉住：信封必须解包；拒绝必须变成可见的错误。
+  const rosterPresets = [
+    { id: 'standard', order: 1, isDefault: true },
+    { id: 'custom', name: '自定义', order: 2, isDefault: false },
+  ]
+  const sessions = { list: { getSnapshot: () => ({ byId: {} }) } }
+
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return {
+        ok: true,
+        data: { presets: [], mcp: [], skills: [], values: {}, warnings: [], paths: { root: 'x', declarations: 'y' } },
+      }
+    },
+  })
+
+  {
+    const ctx2 = {
+      sessions,
+      remote: { agentPresets: { list: async () => ({ ok: true, value: { presets: rosterPresets } }) } },
+    }
+    const state = await APE.loadEditorState(ctx2, 'session-1')
+    check('list 的 {ok,value} 信封被解包成 roster',
+      Array.isArray(state.dsh.roster) && state.dsh.roster.length === 2, JSON.stringify(state.dsh.roster))
+    check('解包后 isDefault 参与 defaultId 推导',
+      state.dsh.roster[0].isDefault === true && state.dsh.defaultId === 'standard', JSON.stringify(state.dsh.defaultId))
+    check('成功时没有 rosterError', state.dsh.rosterError === '', JSON.stringify(state.dsh.rosterError))
+  }
+
+  {
+    const refused = Object.assign(new Error('no such preset'), { code: 'agent-preset/not-found' })
+    const ctx2 = { sessions, remote: { agentPresets: { list: async () => ({ ok: false, error: refused }) } } }
+    const state = await APE.loadEditorState(ctx2, 'session-1')
+    check('list 拒绝信封不抛错，roster 退化为空',
+      Array.isArray(state.dsh.roster) && state.dsh.roster.length === 0)
+    check('list 拒绝原因写进 rosterError（不再静默）',
+      /no such preset/.test(state.dsh.rosterError), state.dsh.rosterError)
+  }
+
+  {
+    // 旧宿主可能真的直接返回裸值：解包器要原样放行，不做版本硬绑定。
+    const ctx2 = { sessions, remote: { agentPresets: { list: async () => ({ presets: rosterPresets }) } } }
+    const state = await APE.loadEditorState(ctx2, 'session-1')
+    check('裸值（非 RemoteResult）同样可用', state.dsh.roster.length === 2)
+    check('remoteValue 原样放行裸值', APE.remoteValue(42) === 42 && APE.remoteValue(null) === null)
+  }
+
+  {
+    const toasts = []
+    const toast = { show: (msg, tone) => toasts.push({ msg, tone }) }
+
+    const okCtx = { remote: { agentPresets: { select: async () => ({ ok: true, value: 'session-1' }) } } }
+    check('select 成功信封 → true',
+      (await APE.LstEnablePreset({ ctx: okCtx, sessionId: 'session-1', presetId: 'p', toast })) === true)
+
+    // 真机症状：宿主拒绝了 select，旧代码因为拿到的是信封而**当成成功**，
+    // 侧边栏 toast「已切换」，实际什么都没变。
+    const locked = Object.assign(new Error('agent-preset/locked'), { code: 'agent-preset/locked' })
+    const lockedCtx = { remote: { agentPresets: { select: async () => ({ ok: false, error: locked }) } } }
+    check('select 拒绝信封 → false（不再假报成功）',
+      (await APE.LstEnablePreset({ ctx: lockedCtx, sessionId: 'session-1', presetId: 'p', toast })) === false)
+    check('locked 拒绝给出「新建会话」提示',
+      toasts.some((t) => /新建会话/.test(t.msg)), JSON.stringify(toasts))
+
+    // 没有会话时的退路：settings.update 的描述符要求 3 个位置参数，
+    // 少传一个会以「装配错误」被拒绝，所以第三参数必须显式给 undefined。
+    let captured = null
+    const settingsCtx = {
+      remote: { settings: { update: async (...args) => { captured = args; return { ok: true, value: {} } } } },
+    }
+    check('无会话时退化为设置默认预设',
+      (await APE.LstEnablePreset({ ctx: settingsCtx, sessionId: '', presetId: 'p', toast })) === true)
+    check('settings.update 传满 3 个位置参数',
+      !!captured && captured.length === 3 && captured[2] === undefined, JSON.stringify(captured))
+
+    const refusedSettings = {
+      remote: {
+        settings: {
+          update: async () => ({ ok: false, error: Object.assign(new Error('settings/conflict'), { code: 'settings/conflict' }) }),
+        },
+      },
+    }
+    check('settings.update 拒绝信封 → false',
+      (await APE.LstEnablePreset({ ctx: refusedSettings, sessionId: '', presetId: 'p', toast })) === false)
+  }
+}
+
+/* -------- roster 合并后的来源徽标：发布态 vs 覆盖内置 -------------------- */
+
+console.log('\n# 19. published user presets are not labelled as built-in overrides')
+{
+  // roster 修好之后，每个已发布的用户预设都会同时出现在「本地定义」与
+  // 「DSH roster」里。旧逻辑把这种重合一律标成「覆盖内置」—— 对 standard
+  // 这类 id 是真的，对本插件自己发布的 10 个预设就是假的。
+  const rows = APE.LstPresetRows({
+    presets: [
+      { id: 'word-master', name: 'Word 大师', order: 30, mcp: [], skills: [] },
+      { id: 'standard', name: '我的标准', order: 10, mcp: [], skills: [] },
+      { id: 'local-only', name: '仅本地', order: 40, mcp: [], skills: [] },
+    ],
+    dsh: {
+      roster: [
+        { id: 'word-master', name: 'Word 大师', order: 30, isDefault: false },
+        { id: 'standard', order: 1, isDefault: true },
+        { id: 'ptc', order: 2, isDefault: false },
+      ],
+    },
+  })
+  const byId = {}
+  for (const row of rows) byId[row.id] = row
+  check('本插件发布的用户预设是「已发布」而不是「覆盖内置」',
+    byId['word-master'].published === true && byId['word-master'].overrides === false,
+    JSON.stringify({ published: byId['word-master'].published, overrides: byId['word-master'].overrides }))
+  check('覆盖内置 id 的用户预设才是「覆盖内置」',
+    byId['standard'].overrides === true && byId['standard'].published === false)
+  check('只在 roster 里的预设是内置行', byId['ptc'].origin === 'system')
+  check('只在本地定义里的预设没有发布标记',
+    byId['local-only'].published === false && byId['local-only'].overrides === false)
+  check('用户行排在系统行前', rows.findIndex((r) => r.id === 'ptc') > rows.findIndex((r) => r.id === 'word-master'))
 }
 
 console.log('')

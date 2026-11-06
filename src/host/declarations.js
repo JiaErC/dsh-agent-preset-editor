@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { backupFile, resolveDshHome, writeFileAtomic } from './store.js';
+import { backupFile, hasExplicitStoreRoot, resolveDshHome, resolveStoreRoot, writeFileAtomic } from './store.js';
 
 /** §1.6 路由前缀（index.js 也用它注册）。 */
 export const API_PREFIX = '/agent-preset-editor/api';
@@ -627,17 +627,30 @@ export function injectManagedBlock(text, body) {
 }
 
 /**
- * 找到当前 profile 的 cordis.patch.yml。
- * 依据优先级：config.profilePatch → $DSH_HOME/profiles 里依赖/声明了本插件的
- * profile → 最近改动的 profile → profiles/web（dsh 的 Web profile 名）。
+ * 从运行中的 host 上下文读出「本进程所属 profile」的受管 patch 路径。
+ *
+ * `profileContext` 是 launcher 在 profile boot 时提供的普通服务（dsh 自己的
+ * base bundle 也用它判断「是否在 profile 里」），字段 `patchPath` 就是该 profile
+ * 的 cordis.patch.yml 绝对路径。这是唯一**精确**的来源 —— 不依赖目录扫描，
+ * 更不依赖 mtime 猜测。
+ * @param {object} ctx - host 的 Cordis 上下文；离线脚本没有。
+ * @returns {string} 绝对路径；不在 profile 里或服务缺失时返回空串。
  */
-export function resolveProfilePatchFile(config) {
-  const explicit = config && (config.profilePatch || config.profile);
-  if (typeof explicit === 'string' && explicit.trim() !== '') {
-    const resolved = path.resolve(explicit.trim());
-    return path.basename(resolved) === 'cordis.patch.yml' ? resolved : path.join(resolved, 'cordis.patch.yml');
+function profilePatchFromContext(ctx) {
+  if (!ctx || typeof ctx.get !== 'function') return '';
+  let profile;
+  try {
+    profile = ctx.get('profileContext');
+  } catch {
+    return '';
   }
+  if (!profile || typeof profile !== 'object') return '';
+  const patchPath = typeof profile.patchPath === 'string' ? profile.patchPath.trim() : '';
+  return patchPath === '' ? '' : path.resolve(patchPath);
+}
 
+/** 扫 $DSH_HOME/profiles：带上 owns（依赖本插件）与 hasBlock（已有受管区块）。 */
+function discoverProfileCandidates() {
   const profilesDir = path.join(resolveDshHome(), 'profiles');
   let names = [];
   try {
@@ -658,17 +671,99 @@ export function resolveProfilePatchFile(config) {
     } catch {
       continue;
     }
-    candidates.push({ patchFile, dir, mtime: stat.mtimeMs, owns: profileOwnsPlugin(dir) });
+    let source = '';
+    try {
+      source = fs.readFileSync(patchFile, 'utf8');
+    } catch {
+      source = '';
+    }
+    candidates.push({
+      patchFile,
+      dir,
+      mtime: stat.mtimeMs,
+      owns: profileOwnsPlugin(dir),
+      hasBlock: source.includes(BLOCK_BEGIN),
+    });
+  }
+  return candidates;
+}
+
+/**
+ * profile 的 patch 里是否**自己声明了**同一个存储根（隔离根场景的归属证明）。
+ *
+ * 保守的字符串判断，不解析 YAML：路径的 `/` 与 `\` 两种写法都先归一再比。
+ * 判断失败最坏只是「认不出来 → 不写 profile」，这正是想要的失败方向。
+ * @param {{patchFile: string}} candidate - 一个 profile 候选。
+ * @param {string} root - 显式配置的存储根绝对路径。
+ * @returns {boolean} 该 profile 是否就是这份存储根的主人。
+ */
+function profileDeclaresRoot(candidate, root) {
+  if (!candidate || root === '') return false;
+  let source = '';
+  try {
+    source = fs.readFileSync(candidate.patchFile, 'utf8');
+  } catch {
+    return false;
+  }
+  if (!source.includes('agent-preset-editor')) return false;
+  return source.replace(/\\/g, '/').includes(root.replace(/\\/g, '/'));
+}
+
+/**
+ * 找到要注入受管区块的 profile cordis.patch.yml。
+ *
+ * 优先级（前两条是确定的，后两条只服务离线脚本）：
+ *  1. `config.profilePatch` / `config.profile` —— 调用方显式指定；
+ *  2. 运行中 host 的 `profileContext.patchPath` —— 本进程自己的 profile，精确；
+ *  3. 隔离存储根（`config.root` 指到别处）：只认 patch 里明确写了同一个 root 的
+ *     profile；认不出来就返回空串 —— 宁可不写，也不写错 profile；
+ *  4. 默认存储根：`$DSH_HOME/profiles` 里依赖本插件的 profile，优先已经带受管
+ *     区块的那个（= 本插件历来发布到那里），再优先名字 `web`，最后按 mtime。
+ *
+ * 第 3 条是拿真机事故换来的：隔离验证 profile（ape-verify，`config.root` 指到
+ * 测试根）既没有显式 profilePatch，也没有被旧实现问过「你是谁」——只剩 mtime
+ * 猜测，于是测试把 e2e 预设写进了用户的 web profile 受管区块，用户真实的预设
+ * 被整块替换，重启后 DSH roster 里只剩测试预设。写别人配置的猜测不可接受。
+ *
+ * @param {object} config - 插件 config。
+ * @param {object} [ctx] - host 的 Cordis 上下文；离线脚本可省略。
+ * @returns {string} profile patch 绝对路径；无法安全确定时返回空串（调用方应跳过注入）。
+ */
+export function resolveProfilePatchFile(config, ctx) {
+  const explicit = config && (config.profilePatch || config.profile);
+  if (typeof explicit === 'string' && explicit.trim() !== '') {
+    const resolved = path.resolve(explicit.trim());
+    return path.basename(resolved) === 'cordis.patch.yml' ? resolved : path.join(resolved, 'cordis.patch.yml');
   }
 
-  if (candidates.length === 0) return path.join(profilesDir, 'web', 'cordis.patch.yml');
+  // 运行中：本进程自己的 profile 是唯一正确目标，任何猜测都不如它。
+  const fromContext = profilePatchFromContext(ctx);
+  if (fromContext !== '') return fromContext;
 
-  // 1) 明确依赖/声明了本插件的 profile；2) Web profile（本插件只跑在 Web GUI 里）；
-  // 3) 最近改动过的 profile。三层都是确定性的，不做随机猜测。
+  const isolatedRoot = hasExplicitStoreRoot(config) ? resolveStoreRoot(config) : '';
+  const candidates = discoverProfileCandidates();
+
+  if (candidates.length === 0) {
+    if (isolatedRoot !== '') return '';
+    return path.join(resolveDshHome(), 'profiles', 'web', 'cordis.patch.yml');
+  }
+
+  if (isolatedRoot !== '') {
+    // 隔离根：只认自己在 patch 里声明了同一 root 的 profile，且必须唯一。
+    const declared = candidates.filter((item) => profileDeclaresRoot(item, isolatedRoot));
+    return declared.length === 1 ? declared[0].patchFile : '';
+  }
+
   const mine = candidates.filter((item) => item.owns);
   const web = candidates.filter((item) => path.basename(item.dir) === 'web');
-  const pool = mine.length > 0 ? mine : web.length > 0 ? web : candidates;
-  pool.sort((a, b) => b.mtime - a.mtime);
+  const pool = (mine.length > 0 ? mine : web.length > 0 ? web : candidates).slice();
+  pool.sort((a, b) => {
+    if (a.hasBlock !== b.hasBlock) return a.hasBlock ? -1 : 1;
+    const aWeb = path.basename(a.dir) === 'web' ? 1 : 0;
+    const bWeb = path.basename(b.dir) === 'web' ? 1 : 0;
+    if (aWeb !== bWeb) return bWeb - aWeb;
+    return b.mtime - a.mtime;
+  });
   return pool[0].patchFile;
 }
 
@@ -757,31 +852,38 @@ export function syncDeclarations(options) {
   const yamlSource = renderPatchDocument(rows);
   const declarations = store.writePatchFile(yamlSource);
 
-  const profilePatch = resolveProfilePatchFile(config);
+  // ctx 传进去：运行中的 host 用 profileContext.patchPath 精确锁定本 profile；
+  // 隔离根在缺少 ctx 时无法安全判定归属，会返回空串（见 resolveProfilePatchFile）。
+  const profilePatch = resolveProfilePatchFile(config, ctx);
   let profileBackup = null;
   let profileCreated = false;
   let profileChanged = false;
   let note;
 
-  try {
-    let existing = '';
+  if (profilePatch === '') {
+    note = `声明已渲染到 ${declarations}，但无法安全确定要注入哪个 profile 的 cordis.patch.yml，本次没有写 profile`
+      + '（隔离存储根请显式配置插件 config.profilePatch）。';
+  } else {
     try {
-      existing = fs.readFileSync(profilePatch, 'utf8');
+      let existing = '';
+      try {
+        existing = fs.readFileSync(profilePatch, 'utf8');
+      } catch (error) {
+        if (!error || error.code !== 'ENOENT') throw error;
+        profileCreated = true;
+      }
+      const next = injectManagedBlock(existing, yamlSource);
+      if (next !== existing) {
+        if (existing !== '') profileBackup = backupFile(profilePatch);
+        writeFileAtomic(profilePatch, next);
+        profileChanged = true;
+      }
+      note = profileChanged
+        ? `声明已写入 ${profilePatch} 的受管区块；DSH 的 profile HMR 会热加载它（未生效时重启一次 dsh）。`
+        : `声明已是最新，${profilePatch} 无需改动；重启 dsh 后生效。`;
     } catch (error) {
-      if (!error || error.code !== 'ENOENT') throw error;
-      profileCreated = true;
+      note = `声明已渲染到 ${declarations}，但写入 profile patch 失败：${error && error.message ? error.message : String(error)}。请手动复制该文件内容。`;
     }
-    const next = injectManagedBlock(existing, yamlSource);
-    if (next !== existing) {
-      if (existing !== '') profileBackup = backupFile(profilePatch);
-      writeFileAtomic(profilePatch, next);
-      profileChanged = true;
-    }
-    note = profileChanged
-      ? `声明已写入 ${profilePatch} 的受管区块；重启 dsh（或重新加载 profile）后生效。`
-      : `声明已是最新，${profilePatch} 无需改动；重启 dsh 后生效。`;
-  } catch (error) {
-    note = `声明已渲染到 ${declarations}，但写入 profile patch 失败：${error && error.message ? error.message : String(error)}。请手动复制该文件内容。`;
   }
 
   return {
@@ -789,7 +891,7 @@ export function syncDeclarations(options) {
     rows,
     rowIds: rows.map((row) => row.rowId),
     declarations,
-    profilePatch,
+    profilePatch: profilePatch === '' ? null : profilePatch,
     profileBackup,
     profileCreated,
     profileChanged,

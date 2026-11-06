@@ -826,3 +826,34 @@ MCP/Skills/plugins/可继承提示词，每次渲染都现算。父预设改完�
 
 **给 agent 的操作提示**：建子预设 = `POST /preset/save` 时带上 `parentId`；
 给父预设加共享段 = 同一接口带 `sharedPrompt`。两者都不需要额外接口。
+
+## 12. 隔离验证 profile：必须同时配 `root` 与 `profilePatch`
+
+host 半每次保存 / 发布都要把声明写进**某个 profile** 的 `cordis.patch.yml` 受管区块。
+目标 profile 的解析顺序（`declarations.js` 的 `resolveProfilePatchFile`）：
+
+1. 插件 config 的 `profilePatch`（显式指定，永远最优先）；
+2. 运行中 host 的 `profileContext.patchPath` —— 本进程自己的 profile，精确，不猜；
+3. 隔离存储根（`config.root` 指到别处）且拿不到 host 上下文时：只认自己的
+   `cordis.patch.yml` 里声明了**同一个 root** 的那个 profile；认不出来就**不写**；
+4. 默认存储根 + 离线脚本：优先已经有受管区块的 profile，其次名字 `web`，最后 mtime。
+
+**起独立验证实例时，`root` 和 `profilePatch` 要一起配**，别只配 root：
+
+```yaml
+- id: agent-preset-editor
+  name: dsh-agent-preset-editor
+  config:
+    root: 'D:\.dsh\agent-preset-editor-verify'
+    profilePatch: 'D:\.dsh\profiles\ape-verify\cordis.patch.yml'
+```
+
+为什么：2026-11-05 的真机事故 —— 验证实例只配了 `root`，旧实现靠 patch 文件的 mtime
+猜到了用户的 `web` profile，把 e2e 测试预设写进用户的受管区块，真实预设整块丢失；
+DSH 重启后 roster 里只剩 `e2e-parent` / `e2e-child`，用户以为「预设加载不了」。
+现在隔离根 + 无上下文时宁可返回空串不写，但显式 `profilePatch` 依然是最稳的做法。
+
+**恢复办法**：存储根里还有 `applied.json` 与各预设定义时，跑
+`node scripts/republish-managed-block.mjs --patch <profile 目录或 cordis.patch.yml>`
+按当前定义重放受管区块；运行中的 host 会经 profile HMR 热加载它。
+

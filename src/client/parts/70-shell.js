@@ -205,7 +205,9 @@ async function enablePreset(ctx, sessionId, presetId, name) {
     return { ok: false, message: '没有可用会话，无法切换预设' };
   }
   try {
-    await ctx.remote.agentPresets.select(sessionId, presetId);
+    // RemoteResult 信封：select 的拒绝由 remoteValue 抛成 RemoteError，
+    // 下面的 agent-preset/locked 判断依赖它的 code（见 20-api.js）。
+    await remoteCall(function () { return ctx.remote.agentPresets.select(sessionId, presetId); });
     return { ok: true, message: '已把当前会话切换到「' + label + '」' };
   } catch (error) {
     if (isPresetLockedError(error)) {

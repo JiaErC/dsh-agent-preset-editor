@@ -181,7 +181,10 @@ export function createRoutes({ store, ctx, config }) {
       const state = store.readState();
       let profilePatch = null;
       try {
-        profilePatch = resolveProfilePatchFile(config);
+        // ctx 传进去：运行中的 host 用 profileContext.patchPath 精确解析本 profile；
+        // 空串 = 无法安全确定（隔离根），对 UI 来说就是「没有可写的 profile patch」。
+        const resolved = resolveProfilePatchFile(config, ctx);
+        profilePatch = resolved === '' ? null : resolved;
       } catch {
         profilePatch = null;
       }

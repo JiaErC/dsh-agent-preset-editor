@@ -146,6 +146,9 @@ node scripts/republish-managed-block.mjs --dry-run   # 先看每个预设会渲�
 node scripts/republish-managed-block.mjs             # 写回 presets.patch.yml + profile 受管区块
 ```
 
+隔离/多 profile 场景**显式指定目标**（别让它猜）：`--patch <profile 目录或 cordis.patch.yml>`。
+运行中的 dsh 进程永远用 `profileContext.patchPath` 精确解析目标 profile，不会猜。
+
 `npm test` 用的是**构建产物本身**，不是复刻实现：它把 client.js 加载进一个 mock 宿主，
 让 `apply()` 真跑一遍注册，再驱动标签页正文与「让 AI 帮我写」的写入路径。
 

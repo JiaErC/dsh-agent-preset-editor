@@ -10,6 +10,11 @@
  *   profilePatch 覆盖要注入受管区块的 profile 的 cordis.patch.yml
  *   hotApply     true 时 /preset/apply 额外尝试 loader 热挂载（默认 false）
  *
+ * profilePatch 缺省时的解析顺序见 declarations.js 的 resolveProfilePatchFile：
+ * 运行中的 host 用 profileContext.patchPath 精确锁定本 profile；隔离存储根
+ * （root 被覆盖）且拿不到上下文时不猜 mtime —— 认不出归属就不写，避免验证
+ * 实例把测试预设写进用户的真实 profile。
+ *
  * 契约见 docs/CONTRACT.md（§1.6 §2 §3）。
  * ------------------------------------------------------------------ */
 

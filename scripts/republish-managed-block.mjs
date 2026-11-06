@@ -11,16 +11,21 @@
  * 幂等：同一份存储内容永远产出同样的文件；块外内容一个字节都不动（复用
  * declarations.js 里与 /preset/apply 完全相同的 injectManagedBlock）。
  *
- * 用法：node scripts/republish-managed-block.mjs [--dry-run]
+ * 用法：node scripts/republish-managed-block.mjs [--dry-run] [--patch <profile 目录或 cordis.patch.yml>]
+ *
+ * `--patch` 是给隔离/多 profile 场景的保险：不给时用 resolveProfilePatchFile 的
+ * 启发式（默认存储根 → 带受管区块的 profile 优先）。运行中的 dsh 进程永远用
+ * profileContext.patchPath，不会走这个猜测。
  */
 
 import fs from 'node:fs';
 
-import { injectManagedBlock, renderPatchDocument, buildPresetRow, hasDeclarationRow } from '../src/host/declarations.js';
+import { injectManagedBlock, renderPatchDocument, buildPresetRow, hasDeclarationRow, resolveProfilePatchFile, resolvePreset } from '../src/host/declarations.js';
 import { backupFile, createStore, resolveDshHome, resolveStoreRoot, writeFileAtomic } from '../src/host/store.js';
-import { resolveProfilePatchFile } from '../src/host/declarations.js';
 
 const dryRun = process.argv.includes('--dry-run');
+const patchFlagAt = process.argv.indexOf('--patch');
+const explicitPatch = patchFlagAt >= 0 ? process.argv[patchFlagAt + 1] : '';
 
 const store = createStore(resolveStoreRoot({}));
 const appliedIds = store.readApplied();
@@ -35,14 +40,21 @@ const skillById = new Map(catalogs.skills.map((entry) => [entry.id, entry]));
 const SHIPPED = new Set(['standard', 'ptc', 'minimal', 'cordis']);
 const ctx = {};
 
+// 父子合并也要看得见全部预设与取值：与 syncDeclarations 的渲染路径保持一致。
+const allPresets = store.listPresets().presets || [];
+const allValues = store.listValues() || {};
+
 const rows = [];
 for (const id of appliedIds) {
-  const definition = store.readPreset(id);
-  if (!definition) {
+  const stored = store.readPreset(id);
+  if (!stored) {
     console.log(`  ! ${id}：没有本地定义，跳过（下次 sync 会把它从 applied 里摘掉）`);
     continue;
   }
-  const values = store.readValues(id) || {};
+  const ownValues = store.readValues(id) || {};
+  const merged = resolvePreset(stored, allPresets, { ...allValues, [id]: ownValues });
+  const definition = merged.definition;
+  const values = merged.values;
   const resolvedSkills = [];
   for (const ref of definition.skills || []) {
     const entry = skillById.get(ref);
@@ -59,7 +71,8 @@ for (const id of appliedIds) {
 rows.sort((a, b) => (a.order === b.order ? a.presetId.localeCompare(b.presetId) : a.order - b.order));
 
 const yamlSource = renderPatchDocument(rows);
-const profilePatch = resolveProfilePatchFile({});
+// 不给 --patch 时走启发式；隔离 / 多 profile 场景请显式指定，别让它猜。
+const profilePatch = resolveProfilePatchFile(explicitPatch !== '' ? { profilePatch: explicitPatch } : {});
 
 console.log('=== 重放受管区块 ===');
 console.log(`  DSH_HOME=${resolveDshHome()}`);
@@ -68,6 +81,10 @@ console.log(`  applied=${JSON.stringify(appliedIds)}`);
 for (const row of rows) {
   const ids = row.config.plugins.map((item) => item.id);
   console.log(`  ${row.rowId}：${ids.length} 行 → ${ids.join(' / ')}`);
+}
+if (profilePatch === '') {
+  console.error('  ✗ 无法安全确定要注入哪个 profile 的 cordis.patch.yml；请用 --patch <profile 目录或文件> 指定。');
+  process.exit(1);
 }
 console.log(`  profile patch=${profilePatch}`);
 

@@ -177,7 +177,8 @@ function ParBuiltinView(props) {
       return undefined;
     }
     Promise.resolve()
-      .then(function () { return agentPresets.read(id); })
+      // Remote 调用返回 { ok, value } 信封：解包后 data = { agentPreset, content, ... }
+      .then(function () { return remoteCall(function () { return agentPresets.read(id); }); })
       .then(
         function (data) {
           if (alive) setInfo({ loading: false, error: null, data: data || null, unsupported: false });

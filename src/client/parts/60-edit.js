@@ -1688,7 +1688,9 @@ function EditMode(props) {
     }
     setBusy(true);
     try {
-      await remote.agentPresets.select(props.sessionId, draft.id);
+      // RemoteResult 信封要解包：拒绝分支由 remoteValue 抛出宿主的 RemoteError，
+      // 下面的 agent-preset/locked 判断依赖它的 code（见 20-api.js）。
+      await remoteCall(function () { return remote.agentPresets.select(props.sessionId, draft.id); });
       notify('已切换到「' + (draft.name || draft.id) + '」', 'ok');
       if (props.reload) await props.reload();
     } catch (error) {
@@ -1711,7 +1713,8 @@ function EditMode(props) {
     }
     setSourceView({ loading: true, content: '', error: '' });
     try {
-      var result = await remote.agentPresets.read(draft.id);
+      // 解包 RemoteResult：value = { agentPreset, content, name?, description? }
+      var result = await remoteCall(function () { return remote.agentPresets.read(draft.id); });
       setSourceView({
         loading: false,
         content: EdText(result && (result.content !== undefined ? result.content : result.agentPreset)).slice(0, 20000),

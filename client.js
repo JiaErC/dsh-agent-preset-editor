@@ -41,6 +41,16 @@ const API_BASE = '/agent-preset-editor/api';
 /** Settings namespace `dsh-client-ui-agent-preset` writes the default into. */
 const AGENT_PRESET_SETTINGS_NS = 'agent-preset-registry';
 
+/**
+ * 随 DSH 包发布的四个内置预设 id，必须与 host 半 declarations.js 的
+ * `SHIPPED_PRESET_IDS` 保持一致。
+ *
+ * 用途只有一处：列表里同时有「本地定义」与「roster 条目」时，判断这个用户预设定
+ * 义是**覆盖了内置预设**，还是**本插件自己发布出去的那份**。前者才是真 overlay，
+ * 后者只是发布态 —— 两者的徽标不同。
+ */
+const SHIPPED_PRESET_IDS = ['standard', 'ptc', 'minimal', 'cordis'];
+
 /** The three modes the editor tab can show. */
 const MODE_LIST = 'list';
 const MODE_PARAMS = 'params';
@@ -1361,6 +1371,45 @@ async function apiRequest(method, path, body) {
 }
 
 /**
+ * Unwrap one DSH Client Remote result.
+ *
+ * `ctx.remote.<namespace>.<method>()` follows the Typert Remote contract: every
+ * unary call resolves to a `RemoteResult` — `{ ok: true, value }` or
+ * `{ ok: false, error }` — and never rejects for a carrier problem (see
+ * `@deepseek-ai/dsh-api-gateway/client`). So `await ctx.remote.agentPresets.list()`
+ * yields the ENVELOPE, not the roster: reading `.presets` off it is always
+ * undefined. That is what made the sidebar show an empty DSH roster / an empty
+ * "built-in" section while Settings listed the presets just fine.
+ *
+ * A bare value passes through unchanged, so a caller facing a non-Remote
+ * function (an older host that returns the value directly) still works.
+ * @param {*} result - what the Remote call resolved to.
+ * @returns {*} the business value.
+ */
+function remoteValue(result) {
+  if (result && typeof result === 'object' && result.ok === true) return result.value;
+  if (result && typeof result === 'object' && result.ok === false) {
+    var error = result.error;
+    if (error) throw error;
+    var rejected = new Error('宿主拒绝了这次远程调用');
+    rejected.code = 'remote/rejected';
+    throw rejected;
+  }
+  return result;
+}
+
+/**
+ * Await one Remote call and unwrap its `RemoteResult`. A refusal throws the
+ * host's `RemoteError`, which carries `.code` — the callers' existing
+ * `agent-preset/locked` branches keep working on it.
+ * @param {Function} call - thunk returning the Remote promise.
+ * @returns {Promise<*>} the business value.
+ */
+async function remoteCall(call) {
+  return remoteValue(await call());
+}
+
+/**
  * Build the state a view renders, merging the host's stored definition with
  * the live roster the browser alone can read. The host's `dsh` block is a
  * placeholder; everything authoritative about the running deployment is
@@ -1371,13 +1420,16 @@ async function apiRequest(method, path, body) {
  */
 async function loadEditorState(ctx, sessionId) {
   var state = await Api.state();
-  var dsh = { roster: [], defaultId: null, sessionPreset: null, sessionPresetLocked: false };
+  var dsh = { roster: [], rosterError: '', defaultId: null, sessionPreset: null, sessionPresetLocked: false };
   var remote = ctx && ctx.remote;
   if (remote && remote.agentPresets && typeof remote.agentPresets.list === 'function') {
     try {
-      var roster = await remote.agentPresets.list();
+      var roster = remoteValue(await remote.agentPresets.list());
       dsh.roster = (roster && roster.presets) || [];
     } catch (error) {
+      // Keep the failure visible instead of silently rendering "no presets":
+      // a hidden failure here is exactly what made this bug hard to see.
+      dsh.rosterError = error && error.message ? String(error.message) : String(error);
       console.error('[agent-preset-editor] agentPresets.list failed', error);
     }
     var fallback = null;
@@ -2237,7 +2289,9 @@ async function LstEnablePreset(options) {
 
   if (agentPresets && typeof agentPresets.select === 'function' && sessionId) {
     try {
-      await agentPresets.select(sessionId, presetId);
+      // RemoteResult 信封必须解包：不解包时 select 的拒绝被当成成功，
+      // 侧边栏会报「已切换」而宿主其实没切换（见 20-api.js remoteValue）。
+      await remoteCall(function () { return agentPresets.select(sessionId, presetId); });
       LstOk(toast, '已切换到 ' + name);
       if (typeof options.reload === 'function') await options.reload();
       return true;
@@ -2259,7 +2313,11 @@ async function LstEnablePreset(options) {
   var settings = remote && remote.settings ? remote.settings : null;
   if (settings && typeof settings.update === 'function') {
     try {
-      await settings.update(AGENT_PRESET_SETTINGS_NS, { selectedDefault: presetId });
+      // 三个位置参数是远端描述符的 arity：通配符少传一个会以「装配错误」拒绝。
+      // expectedRevision 传 undefined = 无条件写。
+      await remoteCall(function () {
+        return settings.update(AGENT_PRESET_SETTINGS_NS, { selectedDefault: presetId }, undefined);
+      });
       LstOk(toast, '已把「' + name + '」设为默认预设');
       if (typeof options.reload === 'function') await options.reload();
       return true;
@@ -2440,7 +2498,10 @@ function LstPresetRows(state) {
     var rosterEntry = row.roster || null;
     var numericOrder = userDef ? Number(userDef.order) : NaN;
     row.origin = userDef ? 'user' : 'system';
-    row.overrides = !!(userDef && rosterEntry);
+    // 两边都有：如果 id 是随包发布的内置预设，这个用户定义才是「覆盖内置」；
+    // 其余情况（本插件把用户预设发布进了 profile 受管区块）只是「已发布」。
+    row.overrides = !!(userDef && rosterEntry && SHIPPED_PRESET_IDS.indexOf(row.id) >= 0);
+    row.published = !!(userDef && rosterEntry && !row.overrides);
     row.name = (userDef && userDef.name) || (rosterEntry && rosterEntry.name) || row.id;
     row.description = (userDef && userDef.description) || (rosterEntry && rosterEntry.description) || '';
     row.broken = rosterEntry && rosterEntry.broken ? String(rosterEntry.broken) : '';
@@ -2489,6 +2550,7 @@ function LstPresetRow(props) {
     )
   );
   if (row.overrides) badges.push(h(UiBadge, { key: 'override', tone: 'warn', title: 'DSH 里也有同名预设，当前使用的是这个用户预设' }, '覆盖内置'));
+  if (row.published) badges.push(h(UiBadge, { key: 'published', tone: 'ok', title: '这个用户预设已经声明进 DSH（在 profile 的受管区块里），「启用」可直接切换到它' }, '已发布'));
   if (isCurrent) badges.push(h(UiBadge, { key: 'current', tone: 'ok' }, '当前'));
   if (row.isDefault) badges.push(h(UiBadge, { key: 'default', tone: 'default' }, '默认'));
   if (row.broken) badges.push(h(UiBadge, { key: 'broken', tone: 'err', title: row.broken }, '声明损坏'));
@@ -2772,6 +2834,12 @@ function LstPresetPane(props) {
     }),
     h(LstNote, null,
       '共 ' + rows.length + ' 个预设（含 DSH 内置）。点任意一行进入「参数配置」；「启用」把当前会话切到该预设。'),
+    // roster 读取失败不再静默降级成「没有内置预设」：把原因摆出来，
+    // 用户才知道该刷新页面还是重启宿主（见 20-api.js remoteValue）。
+    state && state.dsh && state.dsh.rosterError
+      ? h(LstNote, { key: 'roster-error' },
+        h('span', { style: LST_STYLE.rowErr }, '读取 DSH 内置预设列表失败：' + String(state.dsh.rosterError)))
+      : null,
     body,
     addOpen
       ? h(LstAddPresetModal, {
@@ -3718,7 +3786,8 @@ function ParBuiltinView(props) {
       return undefined;
     }
     Promise.resolve()
-      .then(function () { return agentPresets.read(id); })
+      // Remote 调用返回 { ok, value } 信封：解包后 data = { agentPreset, content, ... }
+      .then(function () { return remoteCall(function () { return agentPresets.read(id); }); })
       .then(
         function (data) {
           if (alive) setInfo({ loading: false, error: null, data: data || null, unsupported: false });
@@ -5830,7 +5899,9 @@ function EditMode(props) {
     }
     setBusy(true);
     try {
-      await remote.agentPresets.select(props.sessionId, draft.id);
+      // RemoteResult 信封要解包：拒绝分支由 remoteValue 抛出宿主的 RemoteError，
+      // 下面的 agent-preset/locked 判断依赖它的 code（见 20-api.js）。
+      await remoteCall(function () { return remote.agentPresets.select(props.sessionId, draft.id); });
       notify('已切换到「' + (draft.name || draft.id) + '」', 'ok');
       if (props.reload) await props.reload();
     } catch (error) {
@@ -5853,7 +5924,8 @@ function EditMode(props) {
     }
     setSourceView({ loading: true, content: '', error: '' });
     try {
-      var result = await remote.agentPresets.read(draft.id);
+      // 解包 RemoteResult：value = { agentPreset, content, name?, description? }
+      var result = await remoteCall(function () { return remote.agentPresets.read(draft.id); });
       setSourceView({
         loading: false,
         content: EdText(result && (result.content !== undefined ? result.content : result.agentPreset)).slice(0, 20000),
@@ -6228,7 +6300,9 @@ async function enablePreset(ctx, sessionId, presetId, name) {
     return { ok: false, message: '没有可用会话，无法切换预设' };
   }
   try {
-    await ctx.remote.agentPresets.select(sessionId, presetId);
+    // RemoteResult 信封：select 的拒绝由 remoteValue 抛成 RemoteError，
+    // 下面的 agent-preset/locked 判断依赖它的 code（见 20-api.js）。
+    await remoteCall(function () { return ctx.remote.agentPresets.select(sessionId, presetId); });
     return { ok: true, message: '已把当前会话切换到「' + label + '」' };
   } catch (error) {
     if (isPresetLockedError(error)) {

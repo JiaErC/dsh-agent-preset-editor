@@ -12,9 +12,12 @@
  */
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { normalizePresetDefinition, normalizePlugins, isJsExprMarker, RESERVED_PARAM_NAMES } from '../src/host/validate.js';
-import { buildPresetRow, renderPatchDocument, toYaml, resolvePreset } from '../src/host/declarations.js';
+import { buildPresetRow, renderPatchDocument, toYaml, resolvePreset, resolveProfilePatchFile } from '../src/host/declarations.js';
 import { flattenRows, groupServicePlugins } from '../src/host/plugin-template.js';
 
 let passed = 0;
@@ -371,5 +374,108 @@ check('parentId / sharedPrompt 空串不落字段，顶层预设形状不变', (
   assert.equal(child.parentId, 'p1')
   assert.equal(child.sharedPrompt, '共享')
 })
+
+/* 9. profile patch 的归属解析 ---------------------------------------------- */
+// 真机事故：隔离验证 profile（config.root 指向测试根）没有显式 profilePatch，
+// 旧实现靠 mtime 猜到了用户的 web profile，把 e2e 测试预设写进用户的受管区块，
+// 真实预设整块丢失。下面锁死「运行中用 profileContext 精确解析」「隔离根宁可
+// 不写也不猜」「默认根优先已有受管区块的 profile」三条规则。
+
+/** 在临时 DSH_HOME 里跑一段测试，结束后恢复环境变量并删目录。 */
+function withTempDshHome(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ape-profile-patch-'));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = dir;
+  try {
+    return fn(dir);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** 造一个 profile 目录；返回它的 cordis.patch.yml 路径。 */
+function writeProfile(home, name, options = {}) {
+  const dir = path.join(home, 'profiles', name);
+  fs.mkdirSync(dir, { recursive: true });
+  const manifest = { name: 'profile-' + name, dependencies: {} };
+  if (options.owns !== false) manifest.dependencies['dsh-agent-preset-editor'] = 'link:x';
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(manifest));
+  const patchFile = path.join(dir, 'cordis.patch.yml');
+  const source = options.patch === undefined ? '[]\n' : options.patch;
+  fs.writeFileSync(patchFile, source);
+  if (options.mtime !== undefined) {
+    const when = new Date(options.mtime);
+    fs.utimesSync(patchFile, when, when);
+  }
+  return patchFile;
+}
+
+/** 一个只有 profileContext.patchPath 的假 host 上下文。 */
+const contextWithPatch = (patchPath) => ({ get: (name) => (name === 'profileContext' ? { patchPath } : undefined) });
+
+check('显式 config.profilePatch 优先于 profileContext', () => {
+  withTempDshHome((home) => {
+    const explicit = writeProfile(home, 'explicit');
+    const fromCtx = writeProfile(home, 'ctx');
+    assert.equal(
+      resolveProfilePatchFile({ profilePatch: explicit }, contextWithPatch(fromCtx)),
+      explicit,
+    );
+  });
+});
+
+check('运行中按 profileContext.patchPath 精确解析，不猜 mtime', () => {
+  withTempDshHome((home) => {
+    // web 的 patch 更新 —— 旧实现会选中它；正解是上下文里那个 profile。
+    writeProfile(home, 'web', { patch: '[]\n', mtime: 2000000000000 });
+    const mine = writeProfile(home, 'ape-verify', { patch: '[]\n', mtime: 1000000000000 });
+    assert.equal(resolveProfilePatchFile({ root: path.join(home, 'verify-store') }, contextWithPatch(mine)), mine);
+  });
+});
+
+check('隔离根 + 无上下文：只认 patch 里声明了同一 root 的 profile', () => {
+  withTempDshHome((home) => {
+    const storeRoot = path.join(home, 'agent-preset-editor-verify');
+    writeProfile(home, 'web', {
+      patch: '# >>> dsh-agent-preset-editor BEGIN\n[]\n# <<< dsh-agent-preset-editor END\n',
+      mtime: 2000000000000,
+    });
+    const verifyPatch = writeProfile(home, 'ape-verify', {
+      patch: `- id: agent-preset-editor\n  name: dsh-agent-preset-editor\n  config:\n    root: '${storeRoot.replace(/'/g, "''")}'\n`,
+    });
+    assert.equal(resolveProfilePatchFile({ root: storeRoot }), verifyPatch);
+  });
+});
+
+check('隔离根 + 无上下文 + 找不到主人：返回空串（宁可不写，不写错 profile）', () => {
+  withTempDshHome((home) => {
+    writeProfile(home, 'web', { patch: '[]\n' });
+    writeProfile(home, 'other', { patch: '[]\n' });
+    assert.equal(resolveProfilePatchFile({ root: path.join(home, 'nowhere') }), '');
+  });
+});
+
+check('默认根 + 无上下文：优先已经有受管区块的 profile，而不是最近改动的', () => {
+  withTempDshHome((home) => {
+    writeProfile(home, 'recent-but-unmanaged', { patch: '[]\n', mtime: 2000000000000 });
+    const managed = writeProfile(home, 'web', {
+      patch: '# >>> dsh-agent-preset-editor BEGIN\n[]\n# <<< dsh-agent-preset-editor END\n',
+      mtime: 1000000000000,
+    });
+    assert.equal(resolveProfilePatchFile({}), managed);
+  });
+});
+
+check('profileContext 读取抛错时退回启发式而不是崩掉', () => {
+  withTempDshHome((home) => {
+    const managed = writeProfile(home, 'web', {
+      patch: '# >>> dsh-agent-preset-editor BEGIN\n[]\n# <<< dsh-agent-preset-editor END\n',
+    });
+    const angryCtx = { get: () => { throw new Error('cannot get property "profileContext" without inject'); } };
+    assert.equal(resolveProfilePatchFile({}, angryCtx), managed);
+  });
+});
 
 console.log(`\n${process.exitCode ? '失败' : '通过'}：${passed} 项`);

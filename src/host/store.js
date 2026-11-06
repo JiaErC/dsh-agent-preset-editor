@@ -38,6 +38,20 @@ export function resolveStoreRoot(config) {
   return path.join(resolveDshHome(), STORE_DIR_NAME);
 }
 
+/**
+ * config 是否显式指定了存储根（= 隔离根）。
+ *
+ * 单独暴露这个判断给 declarations.js 用：默认根代表「本机唯一的那份用户数据」，
+ * 而隔离根只属于某个验证实例 —— 后者绝不允许靠启发式去猜 profile patch，
+ * 否则一次测试就可能改写用户的真实配置（曾发生过）。
+ * @param {object} config - 插件 config。
+ * @returns {boolean} 是否显式配置了 root/storageRoot。
+ */
+export function hasExplicitStoreRoot(config) {
+  const explicit = config && (config.root || config.storageRoot);
+  return typeof explicit === 'string' && explicit.trim() !== '';
+}
+
 /** 契约要求的 JSON 文本形态：2 空格缩进 + 末尾换行。 */
 export function jsonText(value) {
   return `${JSON.stringify(value, null, 2)}\n`;

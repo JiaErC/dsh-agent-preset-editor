@@ -29,6 +29,16 @@ const API_BASE = '/agent-preset-editor/api';
 /** Settings namespace `dsh-client-ui-agent-preset` writes the default into. */
 const AGENT_PRESET_SETTINGS_NS = 'agent-preset-registry';
 
+/**
+ * 随 DSH 包发布的四个内置预设 id，必须与 host 半 declarations.js 的
+ * `SHIPPED_PRESET_IDS` 保持一致。
+ *
+ * 用途只有一处：列表里同时有「本地定义」与「roster 条目」时，判断这个用户预设定
+ * 义是**覆盖了内置预设**，还是**本插件自己发布出去的那份**。前者才是真 overlay，
+ * 后者只是发布态 —— 两者的徽标不同。
+ */
+const SHIPPED_PRESET_IDS = ['standard', 'ptc', 'minimal', 'cordis'];
+
 /** The three modes the editor tab can show. */
 const MODE_LIST = 'list';
 const MODE_PARAMS = 'params';

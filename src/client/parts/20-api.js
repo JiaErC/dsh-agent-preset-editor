@@ -34,6 +34,45 @@ async function apiRequest(method, path, body) {
 }
 
 /**
+ * Unwrap one DSH Client Remote result.
+ *
+ * `ctx.remote.<namespace>.<method>()` follows the Typert Remote contract: every
+ * unary call resolves to a `RemoteResult` — `{ ok: true, value }` or
+ * `{ ok: false, error }` — and never rejects for a carrier problem (see
+ * `@deepseek-ai/dsh-api-gateway/client`). So `await ctx.remote.agentPresets.list()`
+ * yields the ENVELOPE, not the roster: reading `.presets` off it is always
+ * undefined. That is what made the sidebar show an empty DSH roster / an empty
+ * "built-in" section while Settings listed the presets just fine.
+ *
+ * A bare value passes through unchanged, so a caller facing a non-Remote
+ * function (an older host that returns the value directly) still works.
+ * @param {*} result - what the Remote call resolved to.
+ * @returns {*} the business value.
+ */
+function remoteValue(result) {
+  if (result && typeof result === 'object' && result.ok === true) return result.value;
+  if (result && typeof result === 'object' && result.ok === false) {
+    var error = result.error;
+    if (error) throw error;
+    var rejected = new Error('宿主拒绝了这次远程调用');
+    rejected.code = 'remote/rejected';
+    throw rejected;
+  }
+  return result;
+}
+
+/**
+ * Await one Remote call and unwrap its `RemoteResult`. A refusal throws the
+ * host's `RemoteError`, which carries `.code` — the callers' existing
+ * `agent-preset/locked` branches keep working on it.
+ * @param {Function} call - thunk returning the Remote promise.
+ * @returns {Promise<*>} the business value.
+ */
+async function remoteCall(call) {
+  return remoteValue(await call());
+}
+
+/**
  * Build the state a view renders, merging the host's stored definition with
  * the live roster the browser alone can read. The host's `dsh` block is a
  * placeholder; everything authoritative about the running deployment is
@@ -44,13 +83,16 @@ async function apiRequest(method, path, body) {
  */
 async function loadEditorState(ctx, sessionId) {
   var state = await Api.state();
-  var dsh = { roster: [], defaultId: null, sessionPreset: null, sessionPresetLocked: false };
+  var dsh = { roster: [], rosterError: '', defaultId: null, sessionPreset: null, sessionPresetLocked: false };
   var remote = ctx && ctx.remote;
   if (remote && remote.agentPresets && typeof remote.agentPresets.list === 'function') {
     try {
-      var roster = await remote.agentPresets.list();
+      var roster = remoteValue(await remote.agentPresets.list());
       dsh.roster = (roster && roster.presets) || [];
     } catch (error) {
+      // Keep the failure visible instead of silently rendering "no presets":
+      // a hidden failure here is exactly what made this bug hard to see.
+      dsh.rosterError = error && error.message ? String(error.message) : String(error);
       console.error('[agent-preset-editor] agentPresets.list failed', error);
     }
     var fallback = null;

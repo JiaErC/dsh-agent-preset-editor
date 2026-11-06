@@ -220,7 +220,9 @@ async function LstEnablePreset(options) {
 
   if (agentPresets && typeof agentPresets.select === 'function' && sessionId) {
     try {
-      await agentPresets.select(sessionId, presetId);
+      // RemoteResult 信封必须解包：不解包时 select 的拒绝被当成成功，
+      // 侧边栏会报「已切换」而宿主其实没切换（见 20-api.js remoteValue）。
+      await remoteCall(function () { return agentPresets.select(sessionId, presetId); });
       LstOk(toast, '已切换到 ' + name);
       if (typeof options.reload === 'function') await options.reload();
       return true;
@@ -242,7 +244,11 @@ async function LstEnablePreset(options) {
   var settings = remote && remote.settings ? remote.settings : null;
   if (settings && typeof settings.update === 'function') {
     try {
-      await settings.update(AGENT_PRESET_SETTINGS_NS, { selectedDefault: presetId });
+      // 三个位置参数是远端描述符的 arity：通配符少传一个会以「装配错误」拒绝。
+      // expectedRevision 传 undefined = 无条件写。
+      await remoteCall(function () {
+        return settings.update(AGENT_PRESET_SETTINGS_NS, { selectedDefault: presetId }, undefined);
+      });
       LstOk(toast, '已把「' + name + '」设为默认预设');
       if (typeof options.reload === 'function') await options.reload();
       return true;
@@ -423,7 +429,10 @@ function LstPresetRows(state) {
     var rosterEntry = row.roster || null;
     var numericOrder = userDef ? Number(userDef.order) : NaN;
     row.origin = userDef ? 'user' : 'system';
-    row.overrides = !!(userDef && rosterEntry);
+    // 两边都有：如果 id 是随包发布的内置预设，这个用户定义才是「覆盖内置」；
+    // 其余情况（本插件把用户预设发布进了 profile 受管区块）只是「已发布」。
+    row.overrides = !!(userDef && rosterEntry && SHIPPED_PRESET_IDS.indexOf(row.id) >= 0);
+    row.published = !!(userDef && rosterEntry && !row.overrides);
     row.name = (userDef && userDef.name) || (rosterEntry && rosterEntry.name) || row.id;
     row.description = (userDef && userDef.description) || (rosterEntry && rosterEntry.description) || '';
     row.broken = rosterEntry && rosterEntry.broken ? String(rosterEntry.broken) : '';
@@ -472,6 +481,7 @@ function LstPresetRow(props) {
     )
   );
   if (row.overrides) badges.push(h(UiBadge, { key: 'override', tone: 'warn', title: 'DSH 里也有同名预设，当前使用的是这个用户预设' }, '覆盖内置'));
+  if (row.published) badges.push(h(UiBadge, { key: 'published', tone: 'ok', title: '这个用户预设已经声明进 DSH（在 profile 的受管区块里），「启用」可直接切换到它' }, '已发布'));
   if (isCurrent) badges.push(h(UiBadge, { key: 'current', tone: 'ok' }, '当前'));
   if (row.isDefault) badges.push(h(UiBadge, { key: 'default', tone: 'default' }, '默认'));
   if (row.broken) badges.push(h(UiBadge, { key: 'broken', tone: 'err', title: row.broken }, '声明损坏'));
@@ -755,6 +765,12 @@ function LstPresetPane(props) {
     }),
     h(LstNote, null,
       '共 ' + rows.length + ' 个预设（含 DSH 内置）。点任意一行进入「参数配置」；「启用」把当前会话切到该预设。'),
+    // roster 读取失败不再静默降级成「没有内置预设」：把原因摆出来，
+    // 用户才知道该刷新页面还是重启宿主（见 20-api.js remoteValue）。
+    state && state.dsh && state.dsh.rosterError
+      ? h(LstNote, { key: 'roster-error' },
+        h('span', { style: LST_STYLE.rowErr }, '读取 DSH 内置预设列表失败：' + String(state.dsh.rosterError)))
+      : null,
     body,
     addOpen
       ? h(LstAddPresetModal, {
