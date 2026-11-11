@@ -88,7 +88,7 @@ if (!raw.includes(ANCHOR)) {
 }
 const src = raw.replace(
   ANCHOR,
-  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice, EdPluginRowIssues, LstRefBadge, UiPopover, MODE_EDIT, loadEditorState, LstEnablePreset, remoteValue, LstPresetRows };\n  ' + ANCHOR,
+  'globalThis.__APE__ = { composeAskAi, composeRequestText, composeLanguage, composeInsert, composeSplice, LstAskAi, LstAddPresetModal, LstMcpEditModal, LstSkillEditModal, renderPrompt, EdHighlightPrompt, UiTextarea, ParamsMode, LcForm, UiButton, UiModal, UiBadge, ParRestartNotice, EdPluginRowIssues, LstRefBadge, UiPopover, MODE_EDIT, loadEditorState, LstEnablePreset, remoteValue, LstPresetRows, LstAddPresetModal, LstPresetRow, LstAskAi };\n  ' + ANCHOR,
 )
 
 console.log('# 0. the bundle materializes with only the platform table')
@@ -985,6 +985,93 @@ console.log('\n# 19. published user presets are not labelled as built-in overrid
   check('只在本地定义里的预设没有发布标记',
     byId['local-only'].published === false && byId['local-only'].overrides === false)
   check('用户行排在系统行前', rows.findIndex((r) => r.id === 'ptc') > rows.findIndex((r) => r.id === 'word-master'))
+}
+
+/* -------- 子预设：入口在列表行（+ 按钮 / 展开箭头）与 AI 提示词 -------- */
+
+console.log('\n# 18. child presets: entry points and AI wording')
+{
+  const textOf = (node) => {
+    if (node === null || node === undefined) return ''
+    if (Array.isArray(node)) return node.map(textOf).join('')
+    if (typeof node === 'string' || typeof node === 'number') return String(node)
+    if (typeof node === 'object' && Array.isArray(node.children)) return textOf(node.children)
+    return ''
+  }
+  const collect = (element, predicate) => {
+    const found = []
+    walk(element, (node) => { if (predicate(node)) found.push(node) })
+    return found
+  }
+  const buttons = (tree) => collect(tree, (n) => n.type === APE.UiButton)
+
+  // —— 编辑模式里不该再有「父预设」下拉：父子关系只能在创建时确定 ——
+  const editSrc = readFileSync(join(root, 'src/client/parts/60-edit.js'), 'utf8')
+  check('编辑模式里没有「父预设」下拉', !editSrc.includes("label: '父预设'"))
+  check('编辑模式里没有 parentOptions 候选列表', !editSrc.includes('parentOptions'))
+  check('编辑模式仍保留「可继承提示词」', editSrc.includes('可继承提示词'))
+
+  // —— 子预设的 AI 提示词要带上父预设名 ——
+  document.documentElement.lang = 'zh-CN'
+  const withParent = APE.composeRequestText('subpreset', { parentName: '简历助手' })
+  check('子预设提示词点名父预设', withParent.includes('简历助手'), withParent.slice(0, 60))
+  check('子预设提示词说明会继承（提到 $parent）', withParent.includes('{{ $parent }}'))
+  check('子预设提示词提醒父挂载不能改', /不能删改/.test(withParent))
+  check('子预设提示词仍要求先取插件清单', /plugin-template/.test(withParent))
+  check('子预设提示词不留 {parentName} 占位', !withParent.includes('{parentName}'))
+  document.documentElement.lang = 'en-US'
+  const enChild = APE.composeRequestText('subpreset', { parentName: 'Resume Helper' })
+  check('英文子预设提示词同样带父名', enChild.includes('Resume Helper'), enChild.slice(0, 70))
+  check('英文子预设提示词说明继承', /inherits the parent/.test(enChild))
+  document.documentElement.lang = 'zh-CN'
+
+  // —— 预设行：有子预设才有展开箭头；用户预设右侧有「+」 ——
+  const row = { id: 'p1', name: '父预设', description: 'd', origin: 'user' }
+  const state = { presets: [{ id: 'p1', name: '父预设' }, { id: 'c1', name: '子预设', parentId: 'p1' }], dsh: { roster: [] } }
+  hookStates.length = 0
+  hookCursor = 0
+  const noKids = APE.LstPresetRow({ row, state, onOpen() {}, onEdit() {}, onDelete() {}, onAddChild() {}, onToggleExpand() {}, children: [], expanded: false })
+  check('没有子预设时不渲染展开箭头',
+    !buttons(noKids).some((b) => b.props && (b.props.icon === 'chevron-right' || b.props.icon === 'chevron-down')))
+  check('用户预设右侧有「+」按钮',
+    buttons(noKids).some((b) => b.props && b.props.icon === 'plus' && String(b.props.title || '').includes('添加一个子预设')),
+    JSON.stringify(buttons(noKids).map((b) => b.props && b.props.icon)))
+
+  hookStates.length = 0
+  hookCursor = 0
+  const withKids = APE.LstPresetRow({ row, state, onOpen() {}, onEdit() {}, onDelete() {}, onAddChild() {}, onToggleExpand() {}, children: [{ id: 'c1', name: '子预设' }], expanded: false })
+  const chevrons = buttons(withKids).filter((b) => b.props && b.props.icon === 'chevron-right')
+  check('有子预设时左侧出现展开箭头', chevrons.length === 1, `found ${chevrons.length}`)
+  check('箭头提示里带上子预设数量', String(chevrons[0].props.title || '').includes('1 个子预设'), String(chevrons[0].props.title))
+
+  hookStates.length = 0
+  hookCursor = 0
+  const opened = APE.LstPresetRow({ row, state, onOpen() {}, onEdit() {}, onDelete() {}, onAddChild() {}, onToggleExpand() {}, children: [{ id: 'c1', name: '子预设' }], expanded: true })
+  check('展开后箭头变成向下', buttons(opened).some((b) => b.props && b.props.icon === 'chevron-down'))
+
+  // —— 添加弹窗：带 parentId 时标题与 AI 按钮都切换到「子预设」那套 ——
+  hookStates.length = 0
+  hookCursor = 0
+  const childModal = APE.LstAddPresetModal({ state, existingIds: [], parentId: 'p1', ctx: makeCtx({}), sessionId: 's1', toast: { show() {} }, reload: async () => {}, onClose() {}, onCreated() {} })
+  const modalText = textOf(childModal)
+  // 标题在 UiModal 的 props 里（不是 children），所以单独读出来。
+  const childTitle = String((collect(childModal, (n) => n.type === APE.UiModal)[0] || { props: {} }).props.title || '')
+  check('子预设弹窗标题是「添加子 Agent 预设」', childTitle === '添加子 Agent 预设', childTitle)
+  check('子预设弹窗说明继承关系', modalText.includes('继承父预设'))
+  check('子预设弹窗里的 AI 按钮用 subpreset 提示词', (() => {
+    const ask = collect(childModal, (n) => n.type === APE.LstAskAi)[0]
+    return !!ask && ask.props.kind === 'subpreset' && ask.props.parentName === '父预设'
+  })(), JSON.stringify(collect(childModal, (n) => n.type === APE.LstAskAi).map((n) => n.props)))
+
+  hookStates.length = 0
+  hookCursor = 0
+  const topModal = APE.LstAddPresetModal({ state, existingIds: [], ctx: makeCtx({}), sessionId: 's1', toast: { show() {} }, reload: async () => {}, onClose() {}, onCreated() {} })
+  const topTitle = String((collect(topModal, (n) => n.type === APE.UiModal)[0] || { props: {} }).props.title || '')
+  check('普通弹窗标题仍是「添加 Agent 预设」', topTitle === '添加 Agent 预设', topTitle)
+  check('普通弹窗的 AI 按钮仍用 preset 提示词', (() => {
+    const ask = collect(topModal, (n) => n.type === APE.LstAskAi)[0]
+    return !!ask && ask.props.kind === 'preset'
+  })())
 }
 
 console.log('')

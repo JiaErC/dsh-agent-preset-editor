@@ -755,20 +755,12 @@ function EdBasicsSection(props) {
       value: EdStr(draft.order),
       onChange: props.onOrder,
     })),
-    // 父子关系：选定父之后本预设成为子预设，继承父的 MCP / Skills / 可继承提示词。
-    // 只允许一层 —— 候选里排除了「本身已是子预设」的那些，从源头断掉多层的可能。
-    h(UiField, {
-      label: '父预设',
-      info: '选一个父预设后，本预设成为子预设：继承父的 MCP、Skills 与它对外共享的提示词，自己只能追加。只允许一层继承。',
-    }, h(UiSelect, {
-      value: EdStr(draft.parentId),
-      disabled: props.busy,
-      options: [{ label: '（无 —— 作为顶层预设）', value: '' }].concat(EdArr(props.parentOptions)),
-      onChange: props.onParent,
-    })),
+    // 父子关系不在编辑模式里改：子预设只能从列表条目右侧的「+」创建
+    // （创建时就定下父，之后不再变）。这里只展示「我是谁的子预设」这件事，
+    // 以及给顶层预设提供「可继承提示词」这一栏。
     EdStr(draft.parentId)
       ? h('div', { style: ED_NOTICE_STYLE },
-        h('div', null, '这是子预设，父预设是「' + EdStr(props.parentName) + '」。'),
+        h('div', null, '这是「' + EdStr(props.parentName || draft.parentId) + '」的子预设。'),
         h('div', { style: ED_MUTED_STYLE },
           '父预设挂载的 MCP 与 Skills 在下面只读显示，你只能追加自己的；父预设改了这些或改了可继承提示词，'
           + '本预设的声明会在下次保存时自动跟随，不需要你手动同步。'))
@@ -1782,13 +1774,7 @@ function EditMode(props) {
       sourceLoading: !!(sourceView && sourceView.loading),
       sourceContent: sourceView ? sourceView.content : '',
       sourceError: sourceView ? sourceView.error : '',
-      // 父预设候选：排除自己，也排除「本身就是子预设」的那些 —— 只允许一层继承，
-      // 从候选列表里断掉，比让用户选完再报错友好。
-      parentOptions: EdArr(state && state.presets)
-        .filter(function (preset) { return preset && preset.id !== draft.id && !EdStr(preset.parentId); })
-        .map(function (preset) {
-          return { label: (preset.name || preset.id) + '（' + preset.id + '）', value: preset.id };
-        }),
+
       parentName: (function () {
         var pid = EdStr(draft.parentId);
         if (!pid) return '';
@@ -1800,7 +1786,6 @@ function EditMode(props) {
       onName: function (value) { patchDraft({ name: value }); },
       onDescription: function (value) { patchDraft({ description: value }); },
       onOrder: function (value) { patchDraft({ order: value === '' ? 0 : Number(value) }); },
-      onParent: function (value) { patchDraft({ parentId: EdStr(value) }); },
       onSharedPrompt: function (value) { patchDraft({ sharedPrompt: value }); },
       onReadBuiltin: readBuiltin,
     }),

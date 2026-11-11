@@ -91,6 +91,15 @@ const LST_STYLE = {
   note: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', lineHeight: '1.7', padding: '0 2px' },
   stack: { display: 'flex', flexDirection: 'column', gap: '10px' },
   rows: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  // 展开的子预设区：左缩进 + 一条虚线竖线，视觉上表达「隶属于上一行」。
+  childBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+    marginLeft: '22px',
+    paddingLeft: '10px',
+    borderLeft: '1px dashed var(--dsw-alias-border-l4)',
+  },
   pre: {
     margin: '0',
     padding: '10px',
@@ -500,6 +509,10 @@ function LstPresetRow(props) {
       if (presets[pj] && presets[pj].id === parentId) { parentName = String(presets[pj].name || parentId); break; }
     }
   }
+  // 这一行挂了几个子预设（只看本地定义）。有子才显示左侧展开箭头。
+  var children = LstArray(props.children);
+  var hasChildren = children.length > 0;
+  var expanded = props.expanded === true;
   if (parentId) {
     badges.push(h(UiBadge, {
       key: 'child',
@@ -535,6 +548,17 @@ function LstPresetRow(props) {
     }),
   ];
   if (isUser) {
+    // 「给这个预设加子预设」：走和「添加预设」同一个弹窗，只是带上 parentId。
+    actions.push(
+      h(UiButton, {
+        key: 'add-child',
+        size: 'sm',
+        variant: 'ghost',
+        icon: 'plus',
+        title: '给「' + (row.name || row.id) + '」添加一个子预设（继承它的 MCP / Skills / 可继承提示词）',
+        onClick: LstStop(function () { props.onAddChild(row.id); }),
+      })
+    );
     actions.push(
       h(
         UiButton,
@@ -582,7 +606,22 @@ function LstPresetRow(props) {
       active: isCurrent,
       right: h('div', { style: LST_STYLE.actions }, actions),
     },
-    main
+    // 左侧展开箭头 + 主体。没有子预设时留一个等宽占位，让所有行的正文左边界对齐 ——
+    // 否则「有子预设的行」会突然右移一截，看着像缩进错乱。
+    h('div', {
+      style: { display: 'flex', alignItems: 'flex-start', gap: '6px', minWidth: 0, flex: '1 1 auto' },
+    },
+    hasChildren
+      ? h(UiButton, {
+        key: 'expand',
+        size: 'sm',
+        variant: 'ghost',
+        icon: expanded ? 'chevron-down' : 'chevron-right',
+        title: expanded ? '收起子预设' : ('展开 ' + children.length + ' 个子预设'),
+        onClick: LstStop(function () { props.onToggleExpand(row.id); }),
+      })
+      : h('span', { key: 'expand-gap', style: { display: 'inline-block', width: '28px', flex: '0 0 auto' } }),
+    main)
   );
 }
 
@@ -604,6 +643,17 @@ function LstAddPresetModal(props) {
 
   var existing = LstArray(props.existingIds);
   var nextOrder = LstNextOrder(props.state);
+  // 传了 parentId 就是「给某个已存在的预设加子预设」：剩下的流程完全一样，
+  // 只是挂上父子关系、换个标题、把 AI 提示词换成「子预设」那一套。
+  var parentId = typeof props.parentId === 'string' ? props.parentId : '';
+  var isChild = parentId !== '';
+  var parentName = '';
+  if (isChild) {
+    var all = LstArray(props.state && props.state.presets);
+    for (var pi = 0; pi < all.length; pi += 1) {
+      if (all[pi] && all[pi].id === parentId) { parentName = String(all[pi].name || parentId); break; }
+    }
+  }
 
   var onName = function (next) {
     setName(next);
@@ -643,6 +693,8 @@ function LstAddPresetModal(props) {
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
+    // 子预设：挂上父链接。host 保存时会校验父存在、且父自己不是子预设（只允许一层）。
+    if (isChild) definition.parentId = parentId;
 
     LstRun(setBusy, props.toast, '创建预设', function () {
       return Api.savePreset(definition).then(function () {
@@ -658,11 +710,12 @@ function LstAddPresetModal(props) {
     UiModal,
     {
       open: true,
-      title: '添加 Agent 预设',
+      title: isChild ? '添加子 Agent 预设' : '添加 Agent 预设',
       actions: h(LstAskAi, {
         ctx: props.ctx,
         sessionId: props.sessionId,
-        kind: 'preset',
+        kind: isChild ? 'subpreset' : 'preset',
+        parentName: parentName || parentId,
         toast: props.toast,
         onClose: props.onClose,
       }),
@@ -685,7 +738,9 @@ function LstAddPresetModal(props) {
         })),
       h(UiField, { label: '一句话描述' },
         h(UiInput, { value: desc, onChange: setDesc, placeholder: '把需求转化为设计文档' })),
-      h(LstNote, null, '创建后会写入 ' + ((props.state && props.state.paths && props.state.paths.root) || '$DSH_HOME/agent-preset-editor') + '，并直接进入编辑模式。')
+      isChild
+        ? h(LstNote, null, '它是「' + (parentName || parentId) + '」的子预设：继承父预设的 MCP、Skills 与可继承提示词（prompt 里用 {{ $parent }} 取），自己只能追加。' )
+        : h(LstNote, null, '创建后会写入 ' + ((props.state && props.state.paths && props.state.paths.root) || '$DSH_HOME/agent-preset-editor') + '，并直接进入编辑模式。')
     )
   );
 }
@@ -702,12 +757,35 @@ function LstPresetPane(props) {
   var deletePair = useState(null);
   var deleteTarget = deletePair[0];
   var setDeleteTarget = deletePair[1];
+  // 展开状态与「给哪个预设加子预设」都放在列表这一层：行组件是纯展示，
+  // 一次只展开一个也更好读（父子树本来就浅，只允许一层）。
+  var expandPair = useState('');
+  var expandedId = expandPair[0];
+  var setExpandedId = expandPair[1];
+  var childPair = useState('');
+  var addChildFor = childPair[0];
+  var setAddChildFor = childPair[1];
 
   var rows = useMemo(function () { return LstPresetRows(state); }, [state]);
+  // 父预设 id → 它的子预设行。子预设本身**不出现在主列表里**（只在父行下展开），
+  // 否则同一个预设既在自己那行又在父行下，用户会分不清哪个才是它。
+  var childIndex = useMemo(function () {
+    var map = {};
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i];
+      var pid = row && row.def && typeof row.def.parentId === 'string' ? row.def.parentId : '';
+      if (pid === '') continue;
+      if (!map[pid]) map[pid] = [];
+      map[pid].push(row);
+    }
+    return map;
+  }, [rows]);
   var visible = useMemo(function () {
     var out = [];
     for (var i = 0; i < rows.length; i += 1) {
       var row = rows[i];
+      var pid = row && row.def && typeof row.def.parentId === 'string' ? row.def.parentId : '';
+      if (pid !== '') continue; // 子预设只在父行下展开，不单独占一行
       if (LstMatches(query, [row.id, row.name, row.description])) out.push(row);
     }
     return out;
@@ -737,18 +815,50 @@ function LstPresetPane(props) {
       'div',
       { style: LST_STYLE.rows },
       visible.map(function (row) {
-        return h(LstPresetRow, {
-          key: row.id,
-          row: row,
-          state: state,
-          ctx: props.ctx,
-          sessionId: props.sessionId,
-          reload: props.reload,
-          toast: props.toast,
-          onOpen: openParams,
-          onEdit: openEdit,
-          onDelete: setDeleteTarget,
-        });
+        var kids = LstArray(childIndex[row.id]);
+        var isExpanded = kids.length > 0 && expandedId === row.id;
+        return h(
+          Fragment,
+          { key: row.id },
+          h(LstPresetRow, {
+            row: row,
+            state: state,
+            ctx: props.ctx,
+            sessionId: props.sessionId,
+            reload: props.reload,
+            toast: props.toast,
+            onOpen: openParams,
+            onEdit: openEdit,
+            onDelete: setDeleteTarget,
+            children: kids,
+            expanded: isExpanded,
+            onToggleExpand: function (id) { setExpandedId(expandedId === id ? '' : id); },
+            onAddChild: function (id) { setAddChildFor(id); },
+          }),
+          // 展开区：子预设行，左侧缩进 + 虚线竖线，视觉上明确「隶属于上一行」。
+          isExpanded
+            ? h('div', { style: LST_STYLE.childBox },
+              kids.map(function (kid) {
+                return h(LstPresetRow, {
+                  key: kid.id,
+                  row: kid,
+                  state: state,
+                  ctx: props.ctx,
+                  sessionId: props.sessionId,
+                  reload: props.reload,
+                  toast: props.toast,
+                  onOpen: openParams,
+                  onEdit: openEdit,
+                  onDelete: setDeleteTarget,
+                  children: [],
+                  expanded: false,
+                  onToggleExpand: function () {},
+                  onAddChild: function () {},
+                  nested: true,
+                });
+              }))
+            : null
+        );
       })
     );
   }
@@ -788,6 +898,25 @@ function LstPresetPane(props) {
             openEdit(id);
           },
         })
+      : null,
+    // 「给某个预设加子预设」弹窗：和上面同一个组件，只多带 parentId。
+    // 建好后自动展开父行，让用户立刻看到新子预设挂在哪儿。
+    addChildFor
+      ? h(LstAddPresetModal, {
+        state: state,
+        existingIds: existingIds,
+        parentId: addChildFor,
+        ctx: props.ctx,
+        sessionId: props.sessionId,
+        toast: props.toast,
+        reload: props.reload,
+        onClose: function () { setAddChildFor(''); },
+        onCreated: function (id) {
+          setExpandedId(addChildFor);
+          setAddChildFor('');
+          openEdit(id);
+        },
+      })
       : null,
     deleteTarget
       ? h(LstConfirmModal, {
@@ -986,15 +1115,22 @@ function LstMcpEntryFromDraft(draft, original) {
  * 框，剩下的由用户补完、由 AI 通过插件的 HTTP API 落库（见 AI-USAGE.md）。
  */
 function LstAskAi(props) {
-  var kind = props.kind === 'skill' ? 'skill' : (props.kind === 'preset' ? 'preset' : 'mcp');
-  var what = kind === 'skill' ? 'Skill' : (kind === 'preset' ? 'Agent 预设' : 'MCP');
+  var kind = props.kind === 'skill'
+    ? 'skill'
+    : (props.kind === 'preset' ? 'preset' : (props.kind === 'subpreset' ? 'subpreset' : 'mcp'));
+  var what = kind === 'skill' ? 'Skill' : (kind === 'mcp' ? 'MCP' : 'Agent 预设');
+  // 子预设的提示词要带上父预设名，AI 才知道是往哪个预设下面加。
+  var parentName = typeof props.parentName === 'string' ? props.parentName : '';
   return h(UiButton, {
     variant: 'ghost',
     size: 'sm',
     icon: 'edit',
-    title: '把「给 Agent 预设插件添加以下 ' + what + '：」写进当前会话的输入框；你补完信息后由 AI 写入插件',
+    title: (kind === 'subpreset'
+      ? '把「给预设「' + (parentName || '…') + '」添加一个子 Agent 预设：」写进当前会话的输入框'
+      : '把「给 Agent 预设插件添加以下 ' + what + '：」写进当前会话的输入框')
+      + '；你补完信息后由 AI 写入插件',
     onClick: function () {
-      var result = composeAskAi(props.ctx, props.sessionId, kind);
+      var result = composeAskAi(props.ctx, props.sessionId, kind, { parentName: parentName });
       if (result.ok) {
         LstOk(props.toast, '已写入输入框：补完信息后发送，AI 会把它加进插件');
         props.onClose();

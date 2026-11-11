@@ -93,6 +93,23 @@ const COMPOSE_TEXT = {
       + 'as-is. That list is required — one missing row makes the preset fail to activate, so it cannot be '
       + 'selected in DSH.',
   },
+  // 给**已存在的**预设加子预设：和普通预设的关键差别是继承 —— 子预设不用重复描述父已经
+  // 挂载的 MCP / Skills，也不必复制父的共享段落，所以提示词要把这层关系讲清楚，否则 AI
+  // 会照普通预设那样重写一遍，结果与继承叠加成重复内容。
+  // {parentName} 由 composeRequestText 填成父预设的展示名。
+  subpreset: {
+    zh: '给「Agent 预设编辑器」里的 Agent 预设「{parentName}」添加一个子 Agent 预设：\n'
+      + '<说明这个子预设的用途：它要在父预设的基础上做什么、AI 该扮演什么角色、需要哪些额外参数 / MCP / Skills>\n\n'
+      + '子预设会继承父预设的 MCP、Skills 和可继承提示词（在 prompt 里写 {{ $parent }} 取到），'
+      + '所以只描述它额外需要的部分；父挂载的 MCP 与 Skills 不能删改。\n'
+      + '它同样需要自己的 plugins 清单：先 GET {templateUrl} 拿到现成的行，原样放进 plugins。',
+    en: 'Add a child Agent preset to the preset "{parentName}" in the Agent Preset Editor:\n'
+      + '<describe what this child preset is for — what it does on top of the parent, the role the agent '
+      + 'should play, and the extra parameters, MCP servers or Skills it needs>\n\n'
+      + "A child preset inherits the parent's MCP servers, Skills and shared prompt (referenced in its prompt "
+      + 'as {{ $parent }}), so describe only what it adds — the parent mounts cannot be removed or changed.\n'
+      + 'It still needs its own plugins list: GET {templateUrl} first and use the rows it returns as-is.',
+  },
 };
 
 /**
@@ -121,10 +138,15 @@ function composeApiUrl(path) {
  * @param {'mcp'|'skill'|'preset'} kind - which catalogue the button belongs to.
  * @returns {string} the text to place in the composer.
  */
-function composeRequestText(kind) {
+function composeRequestText(kind, extra) {
   var entry = COMPOSE_TEXT[kind] || COMPOSE_TEXT.mcp;
   var text = entry[composeLanguage()] || entry.zh;
-  return text.split('{templateUrl}').join(composeApiUrl('/plugin-template'));
+  // {parentName} 只有 subpreset 用得到；没传就退回一个可读占位，不把花括号模板漏给 AI。
+  var info = extra && typeof extra === 'object' ? extra : {};
+  var parentName = typeof info.parentName === 'string' && info.parentName !== '' ? info.parentName : '（父预设）';
+  return text
+    .split('{templateUrl}').join(composeApiUrl('/plugin-template'))
+    .split('{parentName}').join(parentName);
 }
 
 /* ---------------------------------------------------------------- *
@@ -298,8 +320,8 @@ const COMPOSE_REASON_TEXT = {
  * @param {'mcp'|'skill'} kind - which catalogue the request is about.
  * @returns {{ok: boolean, reason: string, message: string, text: string}}
  */
-function composeAskAi(ctx, sessionId, kind) {
-  var text = composeRequestText(kind);
+function composeAskAi(ctx, sessionId, kind, extra) {
+  var text = composeRequestText(kind, extra);
   var result = composeInsert(ctx, sessionId, text);
   if (result.ok) composeFocusSoon();
   var reason = result.reason || 'unknown';
